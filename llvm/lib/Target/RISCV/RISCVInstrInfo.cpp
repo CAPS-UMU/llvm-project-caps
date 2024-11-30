@@ -2265,6 +2265,21 @@ static bool memOpsHaveSameBasePtr(const MachineInstr &MI1,
   return Base1 == Base2;
 }
 
+  bool isSameLine(uint64_t StartAddr1, uint64_t EndAddr1, uint64_t StartAddr2, uint64_t EndAddr2) {
+    if ((StartAddr1 >> 6 == StartAddr2 >> 6) && (EndAddr1 >> 6 == StartAddr1 >> 6) && (EndAddr2 >> 6 == StartAddr2 >> 6))
+      return true;
+    else
+      return false;
+    return false;
+  }
+  bool isNextLine(uint64_t StartAddr1, uint64_t EndAddr1, uint64_t StartAddr2, uint64_t EndAddr2) {
+    if ((StartAddr1 <= StartAddr2 && (EndAddr2 - StartAddr1 < 64)) || (StartAddr2 <= StartAddr1 && (EndAddr1 - StartAddr2 < 64)))
+      return true;
+    else
+      return false;
+    return false;
+  }
+
 bool RISCVInstrInfo::shouldClusterMemOps(
     ArrayRef<const MachineOperand *> BaseOps1, int64_t Offset1,
     bool OffsetIsScalable1, ArrayRef<const MachineOperand *> BaseOps2,
@@ -2281,10 +2296,32 @@ bool RISCVInstrInfo::shouldClusterMemOps(
     // If only one base op is empty, they do not have the same base ptr
     return false;
   }
-
+  unsigned CacheLineSize = BaseOps1.front()->getParent()->getMF()->getSubtarget().getCacheLineSize();
+  CacheLineSize = CacheLineSize ? CacheLineSize : 64;
   // TODO: Use a more carefully chosen heuristic, e.g. only cluster if offsets
   // indicate they likely share a cache line.
-  return ClusterSize <= 4;
+    // Check if the memory operations are within the same cache line or the next cache line
+  // Calculate the start and end addresses of the memory operations
+  const MachineInstr &FirstLdSt = *BaseOps1.front()->getParent();
+  const MachineInstr &SecondLdSt = *BaseOps2.front()->getParent();
+  uint64_t StartAddr1 = Offset1;
+  uint64_t EndAddr1 = Offset1 + FirstLdSt.getOperand(2).getImm();
+  uint64_t StartAddr2 = Offset2;
+  uint64_t EndAddr2 = Offset2 + SecondLdSt.getOperand(2).getImm();
+
+  if(ClusterSize <= 4 && std::abs(Offset1 - Offset2) < CacheLineSize){
+    return true;
+  }else if (isNextLine(StartAddr1, EndAddr1, StartAddr2, EndAddr2) || isSameLine(StartAddr1, EndAddr1, StartAddr2, EndAddr2))
+  {
+    return false;
+  }else{
+    return false;
+  }
+  
+  // if (!isNextLine(StartAddr1, EndAddr1, StartAddr2, EndAddr2) || !isSameLine(StartAddr1, EndAddr1, StartAddr2, EndAddr2))
+  //   return false;
+  
+  // return ClusterSize <= 4 && std::abs(Offset1 - Offset2) < CacheLineSize;
 }
 
 // Set BaseReg (the base register operand), Offset (the byte offset being

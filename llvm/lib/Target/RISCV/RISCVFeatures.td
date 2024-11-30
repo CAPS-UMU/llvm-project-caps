@@ -783,6 +783,13 @@ def HasVendorXTHeadMemIdx : Predicate<"Subtarget->hasVendorXTHeadMemIdx()">,
                                       AssemblerPredicate<(all_of FeatureVendorXTHeadMemIdx),
                                       "'xtheadmemidx' (T-Head Indexed Memory Operations)">;
 
+def FeatureVendorFusionMemPair
+    : SubtargetFeature<"fusionmempair", "HasVendorFusionMemPair", "true",
+                       "'fusionmempair' (Fusion two-GPR Memory Operations)">;
+def HasVendorFusionMemPair : Predicate<"Subtarget->hasVendorFusionMemPair()">,
+                                    AssemblerPredicate<(all_of FeatureVendorFusionMemPair),
+                                    "'fusionmempair' (Fusion two-GPR Memory Operations)">;
+
 def FeatureVendorXTHeadMemPair
     : SubtargetFeature<"xtheadmempair", "HasVendorXTHeadMemPair", "true",
                        "'xtheadmempair' (T-Head two-GPR Memory Operations)">;

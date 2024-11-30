@@ -100,6 +100,11 @@ static cl::opt<bool> EnableMISchedLoadClustering(
     cl::desc("Enable load clustering in the machine scheduler"),
     cl::init(false));
 
+static cl::opt<bool> EnableMISchedStoreClustering(
+    "riscv-misched-store-clustering", cl::Hidden,
+    cl::desc("Enable store clustering in the machine scheduler"),
+    cl::init(false));
+
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> X(getTheRISCV32Target());
   RegisterTargetMachine<RISCVTargetMachine> Y(getTheRISCV64Target());
@@ -349,6 +354,10 @@ public:
     if (EnableMISchedLoadClustering) {
       DAG = createGenericSchedLive(C);
       DAG->addMutation(createLoadClusterDAGMutation(DAG->TII, DAG->TRI));
+    }
+    if (EnableMISchedStoreClustering) {
+      DAG = createGenericSchedLive(C);
+      DAG->addMutation(createStoreClusterDAGMutation(DAG->TII, DAG->TRI));
     }
     if (ST.hasMacroFusion()) {
       DAG = DAG ? DAG : createGenericSchedLive(C);

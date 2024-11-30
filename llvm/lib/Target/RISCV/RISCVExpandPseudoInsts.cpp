@@ -402,6 +402,30 @@ private:
   bool expandLoadLocalAddress(MachineBasicBlock &MBB,
                               MachineBasicBlock::iterator MBBI,
                               MachineBasicBlock::iterator &NextMBBI);
+  bool expandFULDInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFULWInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFUSDInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFUSWInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFUFLWInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFUFSWInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFUFLDInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFUFSDInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
   bool expandLoadGlobalAddress(MachineBasicBlock &MBB,
                                MachineBasicBlock::iterator MBBI,
                                MachineBasicBlock::iterator &NextMBBI);
@@ -463,6 +487,22 @@ bool RISCVPreRAExpandPseudo::expandMI(MachineBasicBlock &MBB,
   switch (MBBI->getOpcode()) {
   case RISCV::PseudoLLA:
     return expandLoadLocalAddress(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFULD:
+    return expandFULDInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFULW:
+    return expandFULWInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFUSD:
+    return expandFUSDInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFUSW:
+    return expandFUSWInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFUFLD:
+    return expandFUFLDInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFUFSD:
+    return expandFUFSDInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFUFLW:
+    return expandFUFLWInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFUFSW:
+    return expandFUFSWInstPair(MBB, MBBI, NextMBBI);
   case RISCV::PseudoLGA:
     return expandLoadGlobalAddress(MBB, MBBI, NextMBBI);
   case RISCV::PseudoLA_TLS_IE:
@@ -500,6 +540,230 @@ bool RISCVPreRAExpandPseudo::expandAuipcInstPair(
 
   if (MI.hasOneMemOperand())
     SecondMI->addMemOperand(*MF, *MI.memoperands_begin());
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFULDInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LD), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LD), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFULWInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LW), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LW), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFUFLWInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::FLW), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::FLW), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFUFLDInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::FLD), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::FLD), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFUFSWInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register SrcReg1 = MI.getOperand(0).getReg();
+  Register SrcReg2 = MI.getOperand(1).getReg();
+  Register BaseReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::FSW))
+    .addReg(SrcReg1)
+    .addReg(BaseReg)
+    .addImm(Offset1);
+
+  // Second store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::FSW))
+    .addReg(SrcReg2)
+    .addReg(BaseReg)
+    .addImm(Offset2);
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFUFSDInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register SrcReg1 = MI.getOperand(0).getReg();
+  Register SrcReg2 = MI.getOperand(1).getReg();
+  Register BaseReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::FSD))
+    .addReg(SrcReg1)
+    .addReg(BaseReg)
+    .addImm(Offset1);
+
+  // Second store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::FSD))
+    .addReg(SrcReg2)
+    .addReg(BaseReg)
+    .addImm(Offset2);
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFUSDInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register SrcReg1 = MI.getOperand(0).getReg();
+  Register SrcReg2 = MI.getOperand(1).getReg();
+  Register BaseReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SD))
+    .addReg(SrcReg1)
+    .addReg(BaseReg)
+    .addImm(Offset1);
+
+  // Second store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SD))
+    .addReg(SrcReg2)
+    .addReg(BaseReg)
+    .addImm(Offset2);
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFUSWInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+
+  Register SrcReg1 = MI.getOperand(0).getReg();
+  Register SrcReg2 = MI.getOperand(1).getReg();
+  Register BaseReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SW))
+    .addReg(SrcReg1)
+    .addReg(BaseReg)
+    .addImm(Offset1);
+
+  // Second store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SW))
+    .addReg(SrcReg2)
+    .addReg(BaseReg)
+    .addImm(Offset2);
 
   MI.eraseFromParent();
   return true;

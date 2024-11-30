@@ -287,7 +287,7 @@ extern cl::opt<bool> EnableInferAlignmentPass;
 
 PipelineTuningOptions::PipelineTuningOptions() {
   LoopInterleaving = true;
-  LoopVectorization = true;
+  LoopVectorization = true; //RK: Changed here from true to false.
   SLPVectorization = false;
   LoopUnrolling = true;
   ForgetAllSCEVInLoopUnroll = ForgetSCEVInLoopUnroll;

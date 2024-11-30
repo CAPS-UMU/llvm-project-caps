@@ -109,6 +109,15 @@ def SIFIVE_E24 : RISCVProcessorModel<"sifive-e24",
                                       FeatureStdExtF,
                                       FeatureStdExtC]>;
 
+def SIFIVE_FUSION : RISCVProcessorModel<"sifive-fusion",
+                                     RocketModel,
+                                     [Feature64Bit,
+                                      FeatureStdExtM,
+                                      FeatureStdExtA,
+                                      FeatureStdExtF,
+                                      FeatureStdExtD,
+                                      ]>;
+
 def SIFIVE_E31 : RISCVProcessorModel<"sifive-e31",
                                      RocketModel,
                                      [Feature32Bit,

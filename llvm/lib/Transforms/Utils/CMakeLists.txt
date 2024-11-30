@@ -31,6 +31,9 @@ add_llvm_component_library(LLVMTransformUtils
   GlobalStatus.cpp
   GuardUtils.cpp
   HelloWorld.cpp
+  Reorder.cpp
+  Reorderstore.cpp
+  UnrollInnerMostLoop.cpp
   InlineFunction.cpp
   InjectTLIMappings.cpp
   InstructionNamer.cpp
