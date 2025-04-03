@@ -13515,6 +13515,7 @@ static std::unordered_map<int64_t, int> ImmCount;
   // The new operation has twice the width.
   MVT XLenVT = Subtarget.getXLenVT();
   EVT MemVT = LSNode1->getMemoryVT();
+  EVT MemVT2 = LSNode2->getMemoryVT();
   EVT NewMemVT;
   if (MemVT == MVT::i32) {
     NewMemVT = MVT::i64;
@@ -13561,33 +13562,71 @@ static std::unordered_map<int64_t, int> ImmCount;
         //LLVM_DEBUG(dbgs() << "Using FU_LDD for integer load\n");
         Opcode = RISCVISD::FU_LDD;
       }
+    
+    if(MemVT == MVT::i32 || MemVT == MVT::i64){
+      SDValue Res = DAG.getMemIntrinsicNode(
+          Opcode, SDLoc(LSNode1), DAG.getVTList({XLenVT, XLenVT, MVT::Other}),
+          {LSNode1->getChain(),
+          BasePtr, DAG.getConstant(Imm, SDLoc(LSNode1), XLenVT), DAG.getConstant(Imm2, SDLoc(LSNode2), XLenVT)},
+          NewMemVT, NewMMO);
 
+          SDValue Node1 =
+          DAG.getMergeValues({Res.getValue(0), Res.getValue(2)}, SDLoc(LSNode1));
+      SDValue Node2 =
+          DAG.getMergeValues({Res.getValue(1), Res.getValue(2)}, SDLoc(LSNode2));    
+          DAG.ReplaceAllUsesWith(LSNode2, Node2.getNode());
+          LSNode1->isfused = true;
+          LSNode2->isfused = true;
+          LLVM_DEBUG(dbgs() << "Res in fused: "; Res.dump() ; dbgs() << "\n");
+          // DAG.ReplaceAllUsesWith(LSNode1, Node1.getNode());
+          return Node1;
+        
+    } else if(MemVT == MVT::f32 || MemVT == MVT::f64){
+            SDValue Res = DAG.getMemIntrinsicNode(
+              Opcode, SDLoc(LSNode1), DAG.getVTList({MemVT, MemVT, MVT::Other}),
+              {LSNode1->getChain(),
+              BasePtr, DAG.getConstant(Imm, SDLoc(LSNode1), XLenVT), DAG.getConstant(Imm2, SDLoc(LSNode2), XLenVT)},
+              NewMemVT, NewMMO);
 
-    SDValue Res = DAG.getMemIntrinsicNode(
-        Opcode, SDLoc(LSNode1), DAG.getVTList({MemVT, MemVT, MVT::Other}),
-        {LSNode1->getChain(),
-         BasePtr, DAG.getConstant(Imm, SDLoc(LSNode1), XLenVT), DAG.getConstant(Imm2, SDLoc(LSNode2), XLenVT)},
-        NewMemVT, NewMMO);
+              SDValue Node1 =
+              DAG.getMergeValues({Res.getValue(0), Res.getValue(2)}, SDLoc(LSNode1));
+          SDValue Node2 =
+              DAG.getMergeValues({Res.getValue(1), Res.getValue(2)}, SDLoc(LSNode2));
+              DAG.ReplaceAllUsesWith(LSNode2, Node2.getNode());
+              // DAG.DeleteNode(LSNode2);
+              LSNode1->isfused = true;
+              LSNode2->isfused = true;
+              LLVM_DEBUG(dbgs() << "Res in fused: "; Res.dump() ; dbgs() << "\n");
+              // DAG.ReplaceAllUsesWith(LSNode1, Node1.getNode());
+              return Node1;
+    }else{
+      return SDValue();
+    }
 
     // SDValue Res = DAG.getMemIntrinsicNode(
     //     Opcode, SDLoc(LSNode1), DAG.getVTList({XLenVT, XLenVT, MVT::Other}),
     //     {LSNode1->getChain(), BasePtr,
     //      DAG.getConstant(Imm, SDLoc(LSNode1), XLenVT)},
     //     NewMemVT, NewMMO);
-    SDValue Node1 =
-        DAG.getMergeValues({Res.getValue(0), Res.getValue(2)}, SDLoc(LSNode1));
-    SDValue Node2 =
-        DAG.getMergeValues({Res.getValue(1), Res.getValue(2)}, SDLoc(LSNode2));
+    // SDValue Node1 =
+    //     DAG.getMergeValues({Res.getValue(0), Res.getValue(2)}, SDLoc(LSNode1));
+    // SDValue Node2 =
+    //     DAG.getMergeValues({Res.getValue(1), Res.getValue(2)}, SDLoc(LSNode2));
 
-LLVM_DEBUG(dbgs() << "LSNode2 MemVT type: " << MemVT << "\n");
-LLVM_DEBUG(dbgs() << "Node2 MemVT type: " << MemVT << "\n");
+        LLVM_DEBUG(dbgs() << "LSNode111: "; LSNode1->dump(); dbgs() << "\n");
+        LLVM_DEBUG(dbgs() << "LSNode222: "; LSNode2->dump(); dbgs() << "\n");
+        // LLVM_DEDUG(dbgs() << "Res value: "; Res->dump(); dbgs() << "\n");
+LLVM_DEBUG(dbgs() << "LSNode1 MemVT type: " << MemVT << "\n");
+LLVM_DEBUG(dbgs() << "LSNode2 MemVT type: " << MemVT2 << "\n");
 LLVM_DEBUG(dbgs() << "LSNode2 type: " << LSNode2->getValueType(0) << "\n");
-LLVM_DEBUG(dbgs() << "Node2 type: " << LSNode1->getValueType(0) << "\n");
+LLVM_DEBUG(dbgs() << "LSNode1 type: " << LSNode1->getValueType(0) << "\n");
+LLVM_DEBUG(dbgs() << "NewMemVT type: " << NewMemVT << "\n");
+LLVM_DEBUG(dbgs() << "XLenVT type: " << XLenVT << "\n");
 // LLVM_DEBUG(dbgs() << "Node2 type: " << Node2.getValue(0) << "\n");
 
-    DAG.ReplaceAllUsesWith(LSNode2, Node2.getNode());
-    DAG.ReplaceAllUsesWith(LSNode1, Node1.getNode());
-    return Node1;
+    // DAG.ReplaceAllUsesWith(LSNode2, Node2.getNode());
+    // DAG.ReplaceAllUsesWith(LSNode1, Node1.getNode());
+    // return Node1;
   } else {
     //return SDValue(); //comment this to fuse stores
     unsigned Opcode;
@@ -13616,6 +13655,10 @@ LLVM_DEBUG(dbgs() << "Node2 type: " << LSNode1->getValueType(0) << "\n");
         NewMemVT, NewMMO);
 
     DAG.ReplaceAllUsesWith(LSNode2, Res.getNode());
+    LSNode1->isfused = true;
+    LSNode2->isfused = true;
+    LLVM_DEBUG(dbgs() << "Res in fused: "; Res.dump() ; dbgs() << "\n");
+    
     return Res;
   }
 }
@@ -13650,6 +13693,8 @@ static const LSBaseSDNode *LastLSNode1 = nullptr;
 static const LSBaseSDNode *LastLSNode2;
 static int Lastoffset1 = 0;
 static int Lastoffset2 = 0;
+  
+  DAG.RemoveDeadNodes();
 
   // Target does not support load/store pair.
   if (!Subtarget.hasVendorFusionMemPair())
@@ -13659,6 +13704,9 @@ static int Lastoffset2 = 0;
   EVT MemVT = LSNode1->getMemoryVT();
   unsigned OpNum = LSNode1->getOpcode() == ISD::LOAD ? 1 : 2;
 
+  if(LSNode1->isfused){
+    return SDValue();
+  }
   // No volatile, indexed or atomic loads/stores.
   if (!LSNode1->isSimple() || LSNode1->isIndexed())
     return SDValue();
@@ -13685,7 +13733,10 @@ static int Lastoffset2 = 0;
       // No volatile, indexed or atomic loads/stores.
       if (!LSNode2->isSimple() || LSNode2->isIndexed())
         continue;
-
+      
+      if(LSNode2->isfused){
+        continue;
+      }
       // Check if LSNode1 and LSNode2 have the same type and extension.
       if (LSNode1->getOpcode() == ISD::LOAD)
         if (cast<LoadSDNode>(LSNode2)->getExtensionType() !=
@@ -13703,7 +13754,7 @@ static int Lastoffset2 = 0;
     //Lastoffset2 = Offset2;
       // // Print LSNode1 and LSNode2 using LLVM_DEBUG
       // LLVM_DEBUG(dbgs() << "LSNode1: "; LSNode1->dump(); dbgs() << "\n");
-      // LLVM_DEBUG(dbgs() << "LSNode2: "; LSNode2->dump(); dbgs() << "\n");
+      LLVM_DEBUG(dbgs() << "LSNode2: "; LSNode2->dump(); dbgs() << "\n");
 
     }
   }
@@ -13723,6 +13774,10 @@ static int Lastoffset2 = 0;
         if (cast<LoadSDNode>(LSNode2)->getExtensionType() !=
             cast<LoadSDNode>(LSNode1)->getExtensionType())
           continue;
+
+      if(LSNode2->isfused){
+        continue;
+      }
 
       if (LSNode1->getMemoryVT() != LSNode2->getMemoryVT())
         continue;
@@ -13769,55 +13824,12 @@ static int Lastoffset2 = 0;
       if (!Valid)
         continue;
 
-      // Only apply this logic for store operations
-      if (LSNode1->getOpcode() == ISD::STORE) {
-        // Add LSNode2 to the queue
-        LSNode2Queue.push(LSNode2);
-
-        // If the queue exceeds the depth of 3, remove the oldest element
-        if (LSNode2Queue.size() > 2) {
-          LSNode2Queue.pop();
-        }
-
-        // Check if all elements in the queue are the same
-        if (areAllElementsSame(LSNode2Queue)) {
-          LLVM_DEBUG(dbgs() << "All elements in the queue are the same.\n");
-          continue;
-        }
-
-        // Check if LSNode1 and LSNode2 are the same as the last printed nodes
-        if (LSNode1 == LastLSNode1) {
-          ConsecutivePrintCount++;
-        } else {
-          ConsecutivePrintCount = 0;
-        }
-
-        if (LSNode2 == LastLSNode2) {
-          ConsecutivePrintCount++;
-        } else {
-          ConsecutivePrintCount = 0;
-        }
-
-        // Print LSNode1 and LSNode2 using LLVM_DEBUG if the count is less than 3
-        if (ConsecutivePrintCount >= 2) {
-          LLVM_DEBUG(dbgs() << "LSNode1: "; LSNode1->dump(); dbgs() << "\n");
-          LLVM_DEBUG(dbgs() << "LSNode2: "; LSNode2->dump(); dbgs() << "\n");
-          break;
-        }
-
-        if (ConsecutivePrintCount2 >= 2) {
-          LLVM_DEBUG(dbgs() << "LSNode11: "; LSNode1->dump(); dbgs() << "\n");
-          LLVM_DEBUG(dbgs() << "LSNode22: "; LSNode2->dump(); dbgs() << "\n");
-          break;
-        }
-        LastLSNode1 = LSNode1;
-        LastLSNode2 = LSNode2;
-      }
-      // Try to combine.
       if (SDValue Res =
               tryFusionMemPairCombine(DAG, LSNode1, LSNode2, Base1, Offset1, Offset2)){
         LLVM_DEBUG(dbgs() << "LSNode111: "; LSNode1->dump(); dbgs() << "\n");
         LLVM_DEBUG(dbgs() << "LSNode222: "; LSNode2->dump(); dbgs() << "\n");
+        LLVM_DEBUG(dbgs() << "Res value: "; Res->dump(); dbgs() << "\n");
+        LLVM_DEBUG(dbgs() << "#############################" << "\n");
         return Res;
       }
     }

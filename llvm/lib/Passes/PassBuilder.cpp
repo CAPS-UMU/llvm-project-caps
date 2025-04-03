@@ -255,6 +255,8 @@
 #include "llvm/Transforms/Utils/EntryExitInstrumenter.h"
 #include "llvm/Transforms/Utils/FixIrreducible.h"
 #include "llvm/Transforms/Utils/HelloWorld.h"
+#include "llvm/Transforms/Utils/PAAMWorld.h"
+#include "llvm/Transforms/Utils/MarkROI.h"
 #include "llvm/Transforms/Utils/Reorder.h"
 #include "llvm/Transforms/Utils/Reorderstore.h"
 #include "llvm/Transforms/Utils/UnrollInnerMostLoop.h"

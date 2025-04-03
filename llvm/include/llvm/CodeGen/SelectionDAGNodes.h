@@ -1403,6 +1403,8 @@ public:
     }
   }
 
+  bool isfused = false;
+
   // Methods to support isa and dyn_cast
   static bool classof(const SDNode *N) {
     // For some targets, we lower some target intrinsics to a MemIntrinsicNode

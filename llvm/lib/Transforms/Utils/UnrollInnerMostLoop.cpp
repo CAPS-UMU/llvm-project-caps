@@ -112,7 +112,7 @@ PreservedAnalyses UnrollInnermostLoopPass::run(Function &F, FunctionAnalysisMana
            << VectorStoreInstructions << " vector stores.\n";
 
     // Unroll the loop only if it contains 0 vector loads/stores and fewer than 50 instructions
-    if (((VectorLoadInstructions == 0 && VectorStoreInstructions == 0) && TotalInstructions < 50)) {
+    if (((VectorLoadInstructions == 0 && LoadInstructions != 0) && TotalInstructions < 50)) {
         // Ensure the loop is in LCSSA form before unrolling
         // Set the unroll options with a factor of 2
         // LoopUnrollOptions UnrollOpts;
