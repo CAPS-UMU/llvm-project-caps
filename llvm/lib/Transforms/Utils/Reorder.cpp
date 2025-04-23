@@ -43,6 +43,9 @@
     "enable-across-call-reordering", cl::init(false), cl::Hidden,
     cl::desc("Enable Reordering across calls."));
 
+  static cl::opt<int> ReorderDistance(
+    "reorder-distance", cl::init(10000000000), cl::Hidden,
+    cl::desc("Reorder distance."));
 
  static bool isContiguous(APInt addr1, uint64_t size1, APInt addr2, uint64_t size2)
 {
@@ -74,6 +77,7 @@ static bool isSameLine(APInt StartAddr1, APInt EndAddr1, APInt StartAddr2, APInt
     else
         return false;
 }
+
 static bool isNextLine(APInt StartAddr1, APInt EndAddr1, APInt StartAddr2, APInt EndAddr2)
 {
     if ((StartAddr1.ule(StartAddr2) && ((EndAddr2 - StartAddr1).ult(64))) || (StartAddr2.ule(StartAddr1) && ((EndAddr1 - StartAddr2).ult(64))))
@@ -151,35 +155,35 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
         LoadInst *prevLoadInst = nullptr;
         call_inbetween = false; //comment
         errs() << "next BB " << "\n";
-            BasicBlock::iterator it = BB.begin();
+            BasicBlock::iterator it_bb = BB.begin();
             // BasicBlock::iterator end = BB.end();
-            for(it = BB.begin(); it != BB.end();){
-              Instruction &I = *it;
-              ++it;
-              if(it == BB.end() && prevLoadInst != nullptr){
+            for(it_bb = BB.begin(); it_bb != BB.end();){
+              Instruction &I = *it_bb;
+              ++it_bb;
+              if(it_bb == BB.end() && prevLoadInst != nullptr){
                 errs() << "End of BB" << "\n";
-                it = prevLoadInst->getIterator();
-                ++it;
+                it_bb = prevLoadInst->getIterator();
+                ++it_bb;
                 prevLoadInst = nullptr;
                 continue;
               }
-            if (isa<LoadInst>(&I)) {
-              if (I.getType()->isVectorTy()) {
+              if (isa<LoadInst>(&I)) {
+                if (I.getType()->isVectorTy()) {
+                    continue;
+                }
+              }
+              if(!EnableAcrossCallReordering && prevLoadInst != nullptr)
+              {
+                if(isa<CallInst>(&I)){
+                  errs() << "Across call reordering disabled" << "\n";
+                  call_inbetween = true; //comment
+                  it_bb = prevLoadInst->getIterator();
+                  ++it_bb;
+                  prevLoadInst = nullptr;
+                  distance = 0;
                   continue;
-              }
-            }
-            if(!EnableAcrossCallReordering)
-            {
-              if(isa<CallInst>(&I)){
-                errs() << "Across call reordering disabled" << "\n";
-                call_inbetween = true; //comment
-                it = I.getIterator();
-                ++it;
-                prevLoadInst = nullptr;
-                distance = 0;
-                continue;
-              }
-            } 
+                }
+              } 
             // else{
             //   errs() << "Across call reordering enabled" << "\n";
             // }
@@ -251,7 +255,7 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                 errs() << "Instructions Alias curLoad: " << *loadInst << " prev load :" << *prevLoadInst << "\n";
                 currentInst = nullptr;
                 loadInst = nullptr;
-                it++;
+                it_bb++;
                 continue;
               }
               errs() << "Instructions no Alias curLoad: " << *loadInst << " prev load :" << *prevLoadInst << "\n";
@@ -314,62 +318,44 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                             }
                           }
                         }
-                        // continue;
-                      }
-                      if(Instruction *LI = dyn_cast<Instruction>(*it)){
-                        for (Use &U : LI->operands()) {
-                          Value *v = U.get();
-                          //Value *def = LI->getPointerOperand();
-                          if(Instruction *SI = dyn_cast<Instruction>(v)){
-                            //errs() << "Def: " << *SI << "\n";
-                          }
-                          
+                        if(store_detected_call){
+                          distance = 0;
+                          store_detected_call = false;
+                          break;
                         }
-
                       }
-
                     }
+                    errs() << "Distance" << (distance -2) << "\n";
                     if(store_detected_call){
                       distance = 0;
                       store_detected_call = false;
-                      break;
+                      currentInst = nullptr;
+                      loadInst = nullptr;
+                      it_bb = prevLoadInst->getIterator();
+                      ++it_bb;
+                      prevLoadInst = nullptr;
+                      distance = 0;
+                      defChain.clear();
+                      Int_ins.clear();
+                      continue;
                     }
-                    errs() << "Distance" << distance << "\n";
+                    if((distance -2) > ReorderDistance){
+                      currentInst = nullptr;
+                      loadInst = nullptr;
+                      it_bb = prevLoadInst->getIterator();
+                      ++it_bb;
+                      prevLoadInst = nullptr;
+                      distance = 0;
+                      defChain.clear();
+                      Int_ins.clear();
+                      continue;
+                    }
+                  
                     for (auto it = Int_ins.rbegin(); it != Int_ins.rend(); ++it){
                       //errs() << "Instructions in between" << *(*it) << "\n";
                       if (isa<StoreInst>(*it)){//&& (DA.depends(*it, startInst, true))){ 
                         int_mem_op =  dyn_cast<StoreInst>(*it);
                         errs() << "Int mem op: " << *int_mem_op << "\n";
-                        // if( (AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) == AliasResult:: MustAlias) && (AA.alias(prevLoadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) == AliasResult:: MustAlias)){//(DA.depends(prevLoad, int_mem_op, true))){ //){
-                        //     Int_ins.clear();
-                        //     wasted++;
-                        //     Aliases_with_currLoad = true;
-                        //     Aliases_with_prevLoad = true;
-                        //     errs() << "Catalyst Store Aliases with prevload: " << "True" << "\n";
-                        //     errs() << "Catalyst Store Aliases with load: " << "True" << "\n";
-                        //     break;
-                        // } else if((AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) == AliasResult:: MustAlias) && (AA.alias(prevLoadInst, int_mem_op) != AliasResult:: MustAlias)){
-                        //   //int_mem_op->moveAfter(currLoad);
-                        //   Aliases_with_currLoad = true;
-                        //   Aliases_with_prevLoad = false;
-                        //   errs() << "Catalyst Store Aliases with prevload: " << "False" << "\n";
-                        //   errs() << "Catalyst Store Aliases with load: " << "True" << "\n";
-                        //   break;
-                        // } else if((AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) != AliasResult:: MustAlias) && (AA.alias(prevLoadInst, int_mem_op) == AliasResult:: MustAlias)){
-                        //   //int_mem_op->moveBefore(prevLoad);
-                        //   Aliases_with_currLoad = false;
-                        //   Aliases_with_prevLoad = true;
-                        //   // continue;
-                        //   errs() << "Catalyst Store Aliases with prevload: " << "True" << "\n";
-                        //   errs() << "Catalyst Store Aliases with load: " << "False" << "\n";
-                        // } else if((AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) != AliasResult:: MustAlias) && (AA.alias(prevLoadInst, int_mem_op) != AliasResult:: MustAlias)){
-                        //   //int_mem_op->moveAfter(currLoad);
-                        //   Aliases_with_currLoad = false;
-                        //   Aliases_with_prevLoad = false;
-                        //   // continue;
-                        //   errs() << "Catalyst Store Aliases with prevload: " << "False" << "\n";
-                        //   errs() << "Catalyst Store Aliases with load: " << "False" << "\n";
-                        // }
                         if(!EnableSpeculativeReordering){
                           errs() << "Non Speculative reordering" << "\n";
                           if ((AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) == AliasResult::MayAlias ||
@@ -383,6 +369,11 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                               errs() << "Catalyst Store Aliases with prevload: " << "True" << "\n";
                               errs() << "Catalyst Store Aliases with load: " << "True" << "\n";
                               distance = 0;
+                              it_bb = prevLoadInst->getIterator();
+                              ++it_bb;
+                              prevLoadInst = nullptr;
+                              currentInst = nullptr;
+                              loadInst = nullptr;
                               break;
                           } else if ((AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) == AliasResult::MayAlias ||
                                       AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) == AliasResult::MustAlias) &&
@@ -393,6 +384,11 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                               errs() << "Catalyst Store Aliases with prevload: " << "False" << "\n";
                               errs() << "Catalyst Store Aliases with load: " << "True" << "\n";
                               distance = 0;
+                              it_bb = prevLoadInst->getIterator();
+                              ++it_bb;
+                              prevLoadInst = nullptr;
+                              currentInst = nullptr;
+                              loadInst = nullptr;
                               break;
                           } else if ((AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) != AliasResult::MayAlias &&
                                       AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) != AliasResult::MustAlias) &&
@@ -429,6 +425,11 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                               errs() << "Catalyst Store Aliases with prevload: " << "True" << "\n";
                               errs() << "Catalyst Store Aliases with load: " << "True" << "\n";
                               distance = 0;
+                              it_bb = prevLoadInst->getIterator();
+                              ++it_bb;
+                              prevLoadInst = nullptr;
+                              currentInst = nullptr;
+                              loadInst = nullptr;
                               break;
                           } else if ((AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) == AliasResult::MustAlias) &&
                                     (AA.alias(prevLoadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) != AliasResult::MustAlias)) {
@@ -437,6 +438,11 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                               errs() << "Catalyst Store Aliases with prevload: " << "False" << "\n";
                               errs() << "Catalyst Store Aliases with load: " << "True" << "\n";
                               distance = 0;
+                              it_bb = prevLoadInst->getIterator();
+                              ++it_bb;
+                              prevLoadInst = nullptr;
+                              currentInst = nullptr;
+                              loadInst = nullptr;
                               break;
                           } else if ((AA.alias(loadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) != AliasResult::MustAlias) &&
                                     (AA.alias(prevLoadInst->getPointerOperand(), dyn_cast<StoreInst>(*it)->getPointerOperand()) == AliasResult::MustAlias)) {
@@ -460,7 +466,7 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                             errs() << "Catalyst Store Aliases with prevload: " << "May Alias" << "\n";
                           }
                         }
-                      }else if(Instruction *LI = dyn_cast<LoadInst>(*it)){
+                      } else if(Instruction *LI = dyn_cast<LoadInst>(*it)){
                         // for (Use &U : LI->operands()) {
                         //   Value *v = U.get();
                         //   //Value *def = LI->getPointerOperand();
@@ -674,12 +680,17 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                     }
                 }
               if(successfully_reordered){
-                it = ++loadInst->getIterator();
+                it_bb = ++loadInst->getIterator();
                 prevLoadInst = nullptr;
                 call_inbetween = false; //comment
+                successfully_reordered = false;
                 currentInst = nullptr;
                 loadInst = nullptr;
                 distance = 0;
+              }else {
+                currentInst = nullptr;
+                loadInst = nullptr;
+                it_bb++;
               }
               if(UseChain_contains_prevLoad){
                 distance = 0;
@@ -697,13 +708,18 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
               Aliases_with_currLoad = false;
               std::queue<Instruction *>().swap(worklist);
             }
-            if(successfully_reordered){
-                prevLoadInst = nullptr;
-                currentInst = nullptr;
-                loadInst = nullptr;
-                call_inbetween = false; //comment
-                distance = 0;
-              }else if(!prevLoadInst){
+            // if(successfully_reordered){
+            //     prevLoadInst = nullptr;
+            //     currentInst = nullptr;
+            //     loadInst = nullptr;
+            //     call_inbetween = false; //comment
+            //     distance = 0;
+            //   }else{
+            //     currentInst = nullptr;
+            //     loadInst = nullptr;
+            //     it_bb++;
+            //   }
+              if(!prevLoadInst){
                 prevLoadInst = loadInst;
               }
           }

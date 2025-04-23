@@ -18,6 +18,10 @@
 #include "llvm/IR/InlineAsm.h"
 
 using namespace llvm;
+using namespace std;
+static cl::opt<std::string> FunctionName(
+    "roi-function-name", cl::Hidden,
+    cl::desc("ROI Function Name."));
 //641.leela _ZN9FastBoard10self_atariEii FastBoard
 //623.xalancbmk _ZN11xalanc_1_1022XStringCachedAllocator7destroyEPNS_13XStringCachedE XStringCachedAllocator
 //631.deepjeng _Z7ProbeTTP7state_tPiiiPjS1_S1_S1_S1_i
@@ -85,7 +89,17 @@ PreservedAnalyses MarkROIPass::run(Function &F,
         //619.lbm LBM_performStreamCollideTRT
         //620.omnetpp _ZN8EtherMAC22startFrameTransmissionEv
         //623.xalancbmk main //_ZN11xalanc_1_1027XalanReferenceCountedObject15removeReferenceEPS0_
-        if (F.getName() != "main") {
+        std::string function_name = FunctionName;
+        if (function_name.empty())
+        {
+            errs() << "Function name not provided\n";
+            assert(false && "Function name not provided");
+            return PreservedAnalyses::all();
+        }
+        // Print the function name
+        errs() << "Function Name: " << F.getName() << "\n";
+        errs() << "Function Name Input: " << function_name << "\n";
+        if (F.getName() != function_name) {
             return PreservedAnalyses::all(); // Skip other functions
         }
 

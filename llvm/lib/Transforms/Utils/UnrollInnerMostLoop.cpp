@@ -80,6 +80,11 @@ PreservedAnalyses UnrollInnermostLoopPass::run(Function &F, FunctionAnalysisMana
             formLCSSA(*L, DT, &LI, nullptr);
         }
 
+        // for(auto *BB : L->blocks()) {
+        //     for (Instruction &I : *BB) {
+        //         errs() << "Instruction: " << I << "\n";
+        //     }
+        // }
     // Count the total number of instructions, loads, stores, and vector instructions
     int TotalInstructions = 0;
     int LoadInstructions = 0;
