@@ -31,6 +31,7 @@ add_llvm_component_library(LLVMTransformUtils
   GlobalStatus.cpp
   GuardUtils.cpp
   HelloWorld.cpp
+  AliasTestPass.cpp
   PAAMWorld.cpp
   MarkROI.cpp
   Reorder.cpp
