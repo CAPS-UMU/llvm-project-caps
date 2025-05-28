@@ -19,6 +19,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/AliasSetTracker.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/CaptureTracking.h"
@@ -52,6 +53,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include <cassert>
@@ -863,6 +865,11 @@ AliasResult BasicAAResult::alias(const MemoryLocation &LocA,
                                  const Instruction *CtxI) {
   assert(notDifferentParent(LocA.Ptr, LocB.Ptr) &&
          "BasicAliasAnalysis doesn't support interprocedural queries.");
+  LLVM_DEBUG(dbgs() << "Executing BasicAAResult::" << __func__ << "\n"
+                    << "On memory location : \n");
+  LLVM_DEBUG(LocA.print(dbgs()));
+  LLVM_DEBUG(LocB.print(dbgs()));
+  LLVM_DEBUG(dbgs() << "\n");
   return aliasCheck(LocA.Ptr, LocA.Size, LocB.Ptr, LocB.Size, AAQI, CtxI);
 }
 
@@ -1826,10 +1833,15 @@ bool BasicAAResult::constantOffsetHeuristic(const DecomposedGEP &GEP,
 AnalysisKey BasicAA::Key;
 
 BasicAAResult BasicAA::run(Function &F, FunctionAnalysisManager &AM) {
+  LLVM_DEBUG(dbgs() << "Running BasicAA on function : " << F.getName() << "\n");
+
   auto &TLI = AM.getResult<TargetLibraryAnalysis>(F);
   auto &AC = AM.getResult<AssumptionAnalysis>(F);
   auto *DT = &AM.getResult<DominatorTreeAnalysis>(F);
-  return BasicAAResult(F.getParent()->getDataLayout(), F, TLI, AC, DT);
+  
+  BasicAAResult BAAR = BasicAAResult(F.getParent()->getDataLayout(), F, TLI, AC, DT);
+
+  return BAAR;
 }
 
 BasicAAWrapperPass::BasicAAWrapperPass() : FunctionPass(ID) {
