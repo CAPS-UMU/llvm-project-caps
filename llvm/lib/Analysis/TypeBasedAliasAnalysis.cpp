@@ -124,6 +124,8 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "typedbased-aa"
+
 // A handy option for disabling TBAA functionality. The same effect can also be
 // achieved by stripping the !tbaa tags from IR, but this option is sometimes
 // more convenient.
@@ -374,6 +376,12 @@ static bool isStructPathTBAA(const MDNode *MD) {
 AliasResult TypeBasedAAResult::alias(const MemoryLocation &LocA,
                                      const MemoryLocation &LocB,
                                      AAQueryInfo &AAQI, const Instruction *) {
+  LLVM_DEBUG(dbgs() << "Executing TypeBasedAAResult::" << __func__ << "\n"
+                    << "On memory location : \n");
+  LLVM_DEBUG(LocA.print(dbgs()));
+  LLVM_DEBUG(LocB.print(dbgs()));
+  LLVM_DEBUG(dbgs() << "\n");
+
   if (!EnableTBAA)
     return AliasResult::MayAlias;
 
