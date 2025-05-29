@@ -2062,6 +2062,11 @@ Error PassBuilder::parseAAPipeline(AAManager &AA, StringRef PipelineText) {
   if (PipelineText == "default") {
     AA = buildDefaultAAPipeline();
     return Error::success();
+  } 
+  
+  if (PipelineText == "caps-umu") {
+    AA = buildCapsUMUPipeline();
+    return Error::success();
   }
 
   while (!PipelineText.empty()) {
