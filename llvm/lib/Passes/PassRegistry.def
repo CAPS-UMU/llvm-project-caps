@@ -35,6 +35,7 @@ MODULE_ANALYSIS("verify", VerifierAnalysis())
   MODULE_ANALYSIS(NAME, CREATE_PASS)
 #endif
 MODULE_ALIAS_ANALYSIS("globals-aa", GlobalsAA())
+MODULE_ALIAS_ANALYSIS("alias-graph-aa", GraphAA())
 #undef MODULE_ALIAS_ANALYSIS
 #undef MODULE_ANALYSIS
 
@@ -141,6 +142,7 @@ MODULE_PASS("verify", VerifierPass())
 MODULE_PASS("view-callgraph", CallGraphViewerPass())
 MODULE_PASS("wholeprogramdevirt", WholeProgramDevirtPass())
 MODULE_PASS("build-alias-graph", AliasGraphBuilder())
+MODULE_PASS("aliastestpass", AliasTestPass())
 #undef MODULE_PASS
 
 #ifndef MODULE_PASS_WITH_PARAMS
@@ -439,7 +441,6 @@ FUNCTION_PASS("view-dom-only", DomOnlyViewer())
 FUNCTION_PASS("view-post-dom", PostDomViewer())
 FUNCTION_PASS("view-post-dom-only", PostDomOnlyViewer())
 FUNCTION_PASS("wasm-eh-prepare", WasmEHPreparePass())
-FUNCTION_PASS("aliastestpass", AliasTestPass())
 #undef FUNCTION_PASS
 
 #ifndef FUNCTION_PASS_WITH_PARAMS

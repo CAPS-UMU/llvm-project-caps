@@ -26,6 +26,7 @@ endif()
 add_llvm_component_library(LLVMAnalysis
   AliasAnalysis.cpp
   AliasAnalysisEvaluator.cpp
+  AliasGraph.cpp
   AliasSetTracker.cpp
   Analysis.cpp
   AssumeBundleQueries.cpp
@@ -142,10 +143,6 @@ add_llvm_component_library(LLVMAnalysis
   ValueTracking.cpp
   VectorUtils.cpp
   VFABIDemangling.cpp
-  AliasGraphBuilder.cpp 
-  AliasAnalysisTools.cpp 
-  InstHandler.cpp 
-  InterAliasAnalysis.cpp
   ${GeneratedMLSources}
 
   ADDITIONAL_HEADER_DIRS

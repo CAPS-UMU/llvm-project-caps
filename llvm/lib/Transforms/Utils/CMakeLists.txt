@@ -1,5 +1,7 @@
 add_llvm_component_library(LLVMTransformUtils
   AddDiscriminators.cpp
+  AliasGraphBuilder.cpp
+  AliasTestPass.cpp 
   AMDGPUEmitPrintf.cpp
   ASanStackFrameLayout.cpp
   AssumeBundleBuilder.cpp
