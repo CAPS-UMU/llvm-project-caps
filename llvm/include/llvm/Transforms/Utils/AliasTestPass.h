@@ -46,6 +46,8 @@ private:
   AliasResult tryAliasOrigin(const MemoryLocation &LocA, const MemoryLocation &LocB, 
                     AliasGraph &graph, AliasAnalysis &AA);
 
+  AliasResult aliasInterp(const Value * V1, const Value * V2, AliasAnalysis &defaultAA);
+
 public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
 };

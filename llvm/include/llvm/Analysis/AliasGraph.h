@@ -21,6 +21,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/Value.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"  
@@ -74,10 +75,17 @@ public:
     }
 
     void erase(Value* V){
-        if(aliasclass.count(V) == 0)
-            return;
-        
-        aliasclass.erase(V);
+      if(aliasclass.count(V) == 0)
+          return;
+      aliasclass.erase(V);
+    }
+
+    std::set<Value*>::iterator begin() {
+      return aliasclass.begin();
+    }
+
+    std::set<Value*>::iterator end() {
+      return aliasclass.end();
     }
 
     bool operator==(const AliasNode &node) {

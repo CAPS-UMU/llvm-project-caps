@@ -19,14 +19,18 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/Value.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/ModRef.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
+#define DEBUG_TYPE "caps-alias-pass"
 
 //#define QUERY_STATS
 //#define TEST_MODREF
@@ -41,6 +45,53 @@ using namespace llvm;
   } \
 } while(false)
 
+// Check if a Value is a null op or a null ptr
+bool isNull(const Value * V) {
+  if(auto * cst = dyn_cast<Constant>(V))
+    return cst->isNullValue();
+  return false;
+}
+
+// Return true if the 2 given function have the equivalent signatures
+// based on func name and argument type comparison
+bool EqSignatures(const Function * F1, const Function * F2) {
+  if(F1->getNumOperands() != F2->getNumOperands())
+    return false;
+
+  bool res = F1->getName().equals(F2->getName());
+  auto * itArgF1 = F1->arg_begin();
+  auto * itArgF2 = F2->arg_begin();
+  while(res && itArgF1 != F1->arg_end() && itArgF2 != F2->arg_end()) {
+    res = res && itArgF1->getType()->getTypeID() == itArgF2->getType()->getTypeID();
+    itArgF1++;
+    itArgF2++;
+  }
+
+  return res && itArgF1 == F1->arg_end() && itArgF2 == F2->arg_end();
+}
+
+// Check if the first function calls the other
+// return 0 if it is sure to not call, 1 if sure to call, -1 if can't say
+// gives the pointer to the callsite if any
+int isCaller(const Function * F1, const Function * F2,
+                      CallInst * &callsite) {
+  bool hasIndirectCall = false;
+  for(auto &block : *F1) for(auto &instr : block) {
+    if(auto * callinst = dyn_cast<CallInst>(&instr)){
+      auto * callee = callinst->getCalledFunction();
+      if(callee && EqSignatures(F2, callee)) {
+        callsite = const_cast<CallInst*>(callinst);
+        return 1;
+      }
+      hasIndirectCall = true;
+    }
+  }
+
+  callsite = nullptr;
+  return (hasIndirectCall) ? -1 : 0;
+}
+
+// Get the memory manipulating instruction from the IR
 struct MemInstSets AliasTestPass::getMemInstr(Function &F) {
   SetVector<Value *> Loads;
   SetVector<Value *> Stores;
@@ -58,6 +109,109 @@ struct MemInstSets AliasTestPass::getMemInstr(Function &F) {
   return {Loads, Stores, Allocs};
 }
 
+// Get the potential parent of a Value
+// we are in particular interested in the value being an instruction / func arg
+const Function * getValueParent(const Value * V) {
+  if(auto * instr = dyn_cast<Instruction>(V))
+    return instr->getParent()->getParent();
+  if(auto * arg = dyn_cast<Argument>(V))
+    return arg->getParent();
+  if(auto * op = dyn_cast<Operator>(V))
+    errs() << "No parent function easily findable for operator : " << *op;
+  if(auto * cst = dyn_cast<Constant>(V))
+    errs() << "No parent function easily findable for constant : " << *cst;
+  return nullptr;
+}
+
+// Try to determine if two pointers from different functions can be 
+// alias using the default AA pipeline.
+AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, AliasAnalysis &defaultAA) {
+  if(isNull(V1) || isNull(V2)) return AliasResult::NoAlias;
+
+  auto * F1 = getValueParent(V1);
+  assert(F1 != nullptr);
+  auto * F2 = getValueParent(V2);
+  assert(F2 != nullptr);
+
+  // if the two values are used in the same function apply the default AA pipeline
+  if(EqSignatures(F1, F2)) return defaultAA.alias(V1, V2);
+
+  // if the parent function cannot call to one another :
+  if(F1->getNumUses() == 0 && !F1->hasAddressTaken() &&
+     F2->getNumUses() == 0 && !F2->hasAddressTaken()) {
+    // At least one of the functions is not used at all, the pointers can't alias.
+    // Still, it could be a call by interruption, in an OS Kernel for instance,
+    // then if a glb variable is used in both function there could be an alias relation.
+    return AliasResult::NoAlias;
+  }
+  
+  const Function * caller; // calling function
+  const Value * callParam; // pointer used as a parameter by the calling function
+  const Function * called; // called function
+  const Value * calledVal; // pointer used inside the called function
+  CallInst * callsite;     // call site for the called func in the caller func
+
+  // Determine which function is the caller and which is the called one
+  CallInst * CSinF1, * CSinF2;
+  int F1callF2 = isCaller(F1, F2, CSinF1);
+  int F2callF1 = isCaller(F2, F1, CSinF2);
+  if(F1callF2 == -1 && F2callF1 == -1) 
+    // can't be sure that one func call the other, can't determine the alias relationship
+    return AliasResult::MayAlias;
+  if((!F1callF2 && !F2callF1) || (F1callF2 == -1 && !F2callF1)
+    || (!F1callF2 && F2callF1 == -1))
+    // we are sure that the two function cannot call one another
+    return AliasResult::NoAlias;
+  assert(F1callF2 == 1 || F2callF1 == 1);
+
+  if(F1callF2 == 1) { // F1 is the caller
+    caller = F1; called = F2;
+    callParam = V1; calledVal = V2;
+    callsite = CSinF1;
+  } else {  // F2 is the caller
+    caller = F2; called = F1;
+    callParam = V2; calledVal = V1;
+    callsite = CSinF2;
+  }
+
+  assert(callsite != nullptr);
+  // We must find if the value in the caller function is used as a parameter of the called function 
+  auto it = callsite->arg_begin();
+  auto paramName = callParam->getNameOrAsOperand();
+
+  LLVM_DEBUG(errs() << "Iterating through callsite "<< *callsite 
+                    << " ; Looking for " << paramName << " : " << *callParam << " in the call parameters :\n");
+
+  bool usedByCall = it->get()->getNameOrAsOperand() == paramName;
+  while(it != callsite->arg_end() && !usedByCall) {
+    LLVM_DEBUG(errs() << "id : " << it->get()->getNameOrAsOperand() 
+                      << " : " << *it->get() << "\n");
+    usedByCall = (it->get()->getNameOrAsOperand() == paramName);
+    if(!usedByCall) it++;
+    LLVM_DEBUG(if(usedByCall) errs() << "Param found in the call\n");
+  }
+
+  if (const MemoryEffects &M = called->getMemoryEffects(); 
+      !usedByCall || M.doesNotAccessMemory() || M.onlyReadsMemory())
+    // If the value in the caller function isn't used in the call, or 
+    // if the called function does not modify memory, then it won't alias any 
+    // pointer inside the called function
+    return AliasResult::NoAlias;
+
+  // if we couldn't tell from context information of the function, we have to 
+  // if the value in the called function alias with the argument that was given the value
+  // of the caller function
+  /* errs() << "Found : " << it->get()->getNameOrAsOperand() << " ; " << *it->get() <<
+         " as parameter number " << argNum << "\n";  */
+  auto const * Arg = called->getArg(it->getOperandNo());
+
+  LLVM_DEBUG(errs() << paramName << " matches argument : " << *Arg << '\n');
+  if(Arg->onlyReadsMemory()) return AliasResult::NoAlias;
+  return defaultAA.alias(Arg, calledVal);
+}
+
+// Check if the origin nodes of the 2 memory location don't alias in the alias graph, according
+// to the given alias analysis object.
 AliasResult AliasTestPass::tryAliasOrigin(const MemoryLocation &LocA, const MemoryLocation &LocB, 
                                   AliasGraph &graph, AliasAnalysis &AA) {
   AliasNode * node1 = graph.retraceOrigin(LocA);
@@ -65,26 +219,25 @@ AliasResult AliasTestPass::tryAliasOrigin(const MemoryLocation &LocA, const Memo
 
   if(*node1 == *node2) return AliasResult::MustAlias;
 
-  //getting the partition over function of the two nodes 
-  auto FPNode1 = node1->partitionOverFunctions();
-  auto FPNode2 = node2->partitionOverFunctions();
-
   int no=0,may=0,part=0,must=0,total=0;
 
-  for(auto it = FPNode1.begin(); it != FPNode1.end(); it++) {
-    if( ! FPNode2.count(it->first)) continue;
+  for(auto * ptrN1 : *node1) {
+    for(auto * ptrN2 : *node2) {
+      AliasResult AAR = aliasInterp(ptrN1, ptrN2, AA);
 
-    for(auto * valNode1 : it->second) {
-      for (auto * valNode2 : FPNode2[it->first]) {
-        AliasResult AAR = AA.alias(valNode1, valNode2); 
-        switch(AAR) {
-          case AliasResult::NoAlias : no++; break;
-          case AliasResult::MayAlias : may++; break;
-          case AliasResult::PartialAlias : part++; break;
-          case AliasResult::MustAlias : must++; break;
-        }
-        total++;
+      if(AAR == AliasResult::MustAlias) {
+        auto infoPTN1 = to_string(*ptrN1);
+        if(auto * arg = dyn_cast<Argument>(ptrN1))
+          infoPTN1 = "{func["+arg->getParent()->getName().str()+"]; arg["+arg->getNameOrAsOperand()+"]}";
+
+        errs() << "\033[31m Checking the origin of : " << *LocA.Ptr
+               << AAR << " found between : " << infoPTN1 << " <--> " << *ptrN2;
+        node1->print_set();
+        node2->print_set();
+        errs() << " \033[0m\n";
       }
+      INCR_COUNTER(AAR, no, may, part, must);
+      total++;
     }
   }
 
@@ -95,6 +248,8 @@ AliasResult AliasTestPass::tryAliasOrigin(const MemoryLocation &LocA, const Memo
   return (may > no) ? AliasResult::MayAlias : AliasResult::NoAlias;
 }
 
+// execute the alias analysis on a function and display different result
+// according to what macro is enabled/defined
 void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
                       ModuleAnalysisManager &MAM) {
   errs() << F.getName();
