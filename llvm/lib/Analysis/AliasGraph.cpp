@@ -534,7 +534,6 @@ void AliasGraph::HandleCai(CallInst *CAI) {
 
     auto entry = AnalyzedFuncSet.find(calledFunc);
     if(entry == AnalyzedFuncSet.end() || ! entry->second.contains(CAI)) {
-        analyzeFunction(calledFunc);
         if(entry == AnalyzedFuncSet.end()) {
             SetVector<CallInst*> initSVCall;
             initSVCall.insert(CAI);
@@ -543,6 +542,7 @@ void AliasGraph::HandleCai(CallInst *CAI) {
         } else {
             entry->second.insert(CAI);
         }
+        analyzeFunction(calledFunc);
     }
 
 }
