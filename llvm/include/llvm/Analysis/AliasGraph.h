@@ -143,11 +143,11 @@ public:
     std::map<Value*, AliasNode*> NodeMap;
     std::map<AliasNode*, AliasNode*> ToNodeMap;
     std::map<AliasNode*, AliasNode*> FromNodeMap;
+
     bool Is_Analyze_Success;
     AliasFailureReasons failreason;
 
-    std::set<Function*> AnalyzedFuncSet;
-    std::set<std::string> Global_symbol_get_funcSet;
+    DenseMap<Function*, SetVector<CallInst*>> AnalyzedFuncSet;
 
     AliasGraph(){
       NodeMap.clear();
@@ -165,13 +165,6 @@ public:
       ToNodeMap.clear();
       FromNodeMap.clear();
     }
-    /* {
-      std::set<AliasNode*> nodeSet;
-      for(auto it = NodeMap.begin(); it != NodeMap.end(); it++)
-				nodeSet.insert(it->second);
-      for(AliasNode* n : nodeSet) 
-				delete n;
-    } */
 
 		AliasNode* getNode(Value *V);
 		AliasNode* getNode(const MemoryLocation &MemLoc);

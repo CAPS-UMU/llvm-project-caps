@@ -45,7 +45,7 @@ AliasGraph::AliasGraph(Module &M) {
 //Merge n1 into n2
 void AliasGraph::mergeNode(AliasNode* n1, AliasNode* n2){
 
-    if(n1 == n2)    
+    if(*n1 == *n2)    
         return;
 
     //First merge node values
@@ -243,7 +243,6 @@ void AliasGraph::analyzeFunction(Function* F){
       Instruction *iInst = dyn_cast<Instruction>(&(*i));
       this->HandleInst(iInst);
     }
-    this->AnalyzedFuncSet.insert(F);
 }
 
 /// INSTRUCTION HANDLER
@@ -507,6 +506,7 @@ void AliasGraph::HandleMove(Value* v1, Value* v2){
     this->mergeNode(node1, node2);
 }
 
+// f(p1, p2, ...)
 void AliasGraph::HandleCai(CallInst *CAI) {
     //TODO : transform it to the SPATA handle call function
     if(getNode(CAI) == nullptr){
@@ -532,9 +532,22 @@ void AliasGraph::HandleCai(CallInst *CAI) {
         argCallIt++;
     } 
 
-    this->analyzeFunction(calledFunc);
+    auto entry = AnalyzedFuncSet.find(calledFunc);
+    if(entry == AnalyzedFuncSet.end() || ! entry->second.contains(CAI)) {
+        analyzeFunction(calledFunc);
+        if(entry == AnalyzedFuncSet.end()) {
+            SetVector<CallInst*> initSVCall;
+            initSVCall.insert(CAI);
+            std::pair<Function*,SetVector<CallInst*>> newEntry (calledFunc, initSVCall);
+            AnalyzedFuncSet.insert(newEntry);
+        } else {
+            entry->second.insert(CAI);
+        }
+    }
+
 }
 
+// v = f(...)
 void AliasGraph::HandleReturn(Function* F, CallInst* cai){
     for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i)
         if(ReturnInst *returnStatement = dyn_cast<ReturnInst>(&*i))
