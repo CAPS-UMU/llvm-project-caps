@@ -235,19 +235,15 @@ bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
 
 /// INTERPROCEDURAL ALIAS ANALYSIS
 void AliasGraph::analyzeFunction(Function* F){
+    if(!F) return;
+    //testing what happens if a function is analyzed several times
+    LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << " for the " << this->AnalyzedFuncSet.count(F) + 1 << "th time\n");
 
-  if(!F)
-    return;
-
-	// testing what happens if a function is analyzed several times
-  //if(aliasCtx->AnalyzedFuncSet.count(F))
-  errs() << "Analyzing function " << F->getName() << " for the " << this->AnalyzedFuncSet.count(F) + 1 << "th time\n";
-
-  for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
-    Instruction *iInst = dyn_cast<Instruction>(&(*i));
-    this->HandleInst(iInst);
-  }
-  this->AnalyzedFuncSet.insert(F);
+    for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
+      Instruction *iInst = dyn_cast<Instruction>(&(*i));
+      this->HandleInst(iInst);
+    }
+    this->AnalyzedFuncSet.insert(F);
 }
 
 /// INSTRUCTION HANDLER
