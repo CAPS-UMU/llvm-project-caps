@@ -28,6 +28,7 @@
 #include "llvm/Support/ModRef.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
+#include <vector>
 
 using namespace llvm;
 #define DEBUG_TYPE "caps-alias-pass"
@@ -35,6 +36,7 @@ using namespace llvm;
 //#define QUERY_STATS
 //#define TEST_MODREF
 #define COMPARE_RESULT
+#define SIMPLE_EVAL
 
 #define INCR_COUNTER(result, cpt1, cpt2, cpt3, cpt4) do { \
   switch(result) { \
@@ -346,7 +348,8 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
 #ifdef COMPARE_RESULT
   errs() << "GraphAA result that are better than default AA result :  " << betterResult << "\n"
   		 << "Total number of queries : " << totalRequest << "\n"
-  		 << "Percentgage over the total of queries : " << (int)(100 * (float)betterResult / (float)totalRequest) << "%\n";
+  		 << "Percentgage over the total of queries : " 
+       << (int)(100 * (float)betterResult / (float)((!totalRequest)? 1 : totalRequest)) << "%\n";
 #endif //COMPARE_RESULT
 
 #ifdef QUERY_STATS
@@ -364,12 +367,55 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
   errs() << "END OF ANALYSIS OVER " << F.getName() << "-------------------\n"; 
 }
 
+void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM, 
+                            ModuleAnalysisManager &MAM,
+                            std::vector<unsigned int> &counts){
+  if(F.empty()) return;
+
+  AliasAnalysis &AA = FAM.getResult<AAManager>(F);
+  GraphAAResult &GraphAAR = MAM.getResult<GraphAA>(*(F.getParent()));
+  SimpleAAQueryInfo SimpleAAQI (AA);
+
+  struct MemInstSets Sets = getMemInstr(F);
+  for(auto * Load : Sets.Loads){
+    for(auto * Store : Sets.Stores){
+      MemoryLocation LoadLoc = MemoryLocation::get(dyn_cast<LoadInst>(Load));
+      MemoryLocation StoreLoc = MemoryLocation::get(dyn_cast<StoreInst>(Store));
+      AliasResult AAR = AA.alias(LoadLoc, StoreLoc);
+      AAR = (AAR != AliasResult::MayAlias) ? AAR :
+            GraphAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
+      counts[(int)AAR]++;
+      counts[4]++; // incr total
+    }
+  }
+}
+
 PreservedAnalyses AliasTestPass::run(Module &M,
                                       ModuleAnalysisManager &AM) {
   FunctionAnalysisManager &FAM =
         AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-  for(auto &F : M)
+  std::vector<unsigned int> counts (5, 0);
+
+  for(auto &F : M) {
+#ifdef SIMPLE_EVAL
+    this->evaluate(F, FAM, AM, counts);
+#else
     this->iterateOnFunction(F, FAM, AM);
+#endif //SIMPLE_EVAL
+  }
+
+  errs() << M.getName() << " result of default + graph AA query on loads and store : \n"
+      << "Total query performed : " << counts[4] << "\n"
+      << "NoAlias : " << counts[0] << "; MayAlias :" << counts[1] 
+      << "; PartialAlias : " << counts[2] << "; MustAlias : " << counts[3] << "\n";
+
+  if(counts[4]!=0) {
+    #define PROP(n) (int)(100. * (float)n / (float)counts[4])
+    errs() << "Part in percent : no=" << PROP(counts[0]) << "%/" 
+           << "may=" << PROP(counts[1]) << "%/"
+           << "part=" << PROP(counts[2]) << "%/"
+           << "must=" << PROP(counts[3]) << "%\n"; 
+  }
 
   return PreservedAnalyses::all();
 }

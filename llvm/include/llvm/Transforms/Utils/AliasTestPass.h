@@ -21,6 +21,7 @@
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/SetVector.h"
+#include <vector>
 
 namespace llvm {
 
@@ -39,6 +40,8 @@ private:
   struct MemInstSets getMemInstr(Function &F);
   void iterateOnFunction(Function &F, FunctionAnalysisManager &FAM, 
                         ModuleAnalysisManager &MAM);
+  void evaluate(Function &F, FunctionAnalysisManager &FAM, 
+                        ModuleAnalysisManager &MAM, std::vector<unsigned int> &counts);
   bool betterAliasResult(const AliasResult &AR1, const AliasResult &AR2) {
     return AR2 == AliasResult::MayAlias && AR1 != AliasResult::MayAlias;
   }
