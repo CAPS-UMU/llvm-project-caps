@@ -23,6 +23,7 @@
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
+#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -2104,6 +2105,34 @@ AAManager PassBuilder::buildDefaultAAPipeline() {
   // results from `GlobalsAA` through a readonly proxy.
   if (EnableGlobalAnalyses)
     AA.registerModuleAnalysis<GlobalsAA>();
+
+  // Add target-specific alias analyses.
+  if (TM)
+    TM->registerDefaultAliasAnalyses(AA);
+
+  return AA;
+}
+
+AAManager PassBuilder::buildCapsUMUPipeline() {
+  AAManager AA;
+
+  // The order in which these are registered determines their priority when
+  // being queried.
+
+  // First we register the basic alias analysis that provides the majority of
+  // per-function local AA logic. This is a stateless, on-demand local set of
+  // AA techniques.
+  AA.registerFunctionAnalysis<BasicAA>();
+  AA.registerFunctionAnalysis<SCEVAA>();
+
+  // Next we query fast, specialized alias analyses that wrap IR-embedded
+  // information about aliasing.
+  AA.registerFunctionAnalysis<ScopedNoAliasAA>();
+  AA.registerFunctionAnalysis<TypeBasedAA>();
+
+  // registering some global analysis
+  // AA.registerModuleAnalysis<GlobalsAA>();
+
 
   // Add target-specific alias analyses.
   if (TM)

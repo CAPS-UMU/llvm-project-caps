@@ -818,6 +818,104 @@ bool RISCVDAGToDAGISel::tryIndexedLoad(SDNode *Node) {
 
   return true;
 }
+static int64_t getOffsetFromAddr(SDValue Addr) {
+  // If it's a frame index, offset is 0 (simplified)
+  if (Addr.getOpcode() == ISD::FRAMEADDR || Addr.getOpcode() == ISD::FrameIndex)
+    return 0;
+
+  // Check if Addr is an ADD node with a constant
+  if (Addr.getOpcode() == ISD::ADD) {
+    SDValue Op0 = Addr.getOperand(0);
+    SDValue Op1 = Addr.getOperand(1);
+
+    // Check if Op1 is a constant
+    if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(Op1)) {
+      return C->getSExtValue();
+    }
+  }
+
+  // Otherwise offset unknown, return -1
+  return -1;
+}
+
+static StoreSDNode *findNextStore(StoreSDNode *Store) {
+  SDValue Chain = Store->getChain();
+
+  // Get the node representing the chain operand
+  SDNode *ChainNode = Chain.getNode();
+
+  // Check if the next node is a store
+  if (ChainNode && ChainNode->getOpcode() == ISD::STORE)
+    return cast<StoreSDNode>(ChainNode);
+
+  return nullptr;
+}
+
+bool RISCVDAGToDAGISel::tryCombineStores(SDNode *N) {
+
+  if (N->getOpcode() != ISD::STORE)
+    return false;
+
+  StoreSDNode *Store1 = cast<StoreSDNode>(N);
+  if (Store1->isTruncatingStore())
+    return false;
+
+  // SDValue Base1 = Store1->getBasePtr();
+  SDValue Val1 = Store1->getValue();
+
+  StoreSDNode *Store2 = findNextStore(Store1);
+  if (!Store2)
+    return false;
+
+  if (Store2->isTruncatingStore())
+    return false;
+
+  // SDValue Base2 = Store2->getBasePtr();
+  SDValue Val2 = Store2->getValue();
+
+auto *S1 = cast<StoreSDNode>(Store1);
+auto *S2 = cast<StoreSDNode>(Store2);
+
+  auto ExtractBaseAndOffset = [](SDValue Ptr) -> std::pair<SDValue, uint64_t> {
+    if (Ptr->getOpcode() == ISD::ADD)
+      if (auto *C1 = dyn_cast<ConstantSDNode>(Ptr->getOperand(1)))
+        return {Ptr->getOperand(0), C1->getSExtValue()};
+    return {Ptr, 0};
+  };
+  auto [Base1, Offset1] = ExtractBaseAndOffset(Store1->getOperand(2));
+  auto [Base2, Offset2] = ExtractBaseAndOffset(Store1->getOperand(2));
+  // int64_t Offset1 = ExtractBaseAndOffset(Base1);
+  // int64_t Offset2 = ExtractBaseAndOffset(Base2);
+
+    // Check if base pointers are identical (pointer equality)
+  if (Base1 != Base2)
+    return false;
+
+  // if (Offset1 == -1 || Offset2 == -1)
+  //   return false;
+
+  // Check if offsets are exactly 8 bytes apart (for store pair)
+  // if (Offset2 - Offset1 != 8)
+  //   return false;
+
+  SDLoc DL(N);
+
+  SDValue Ops[] = {Val1, Val2, Base1};
+  SDNode *NewNode = CurDAG->getMachineNode(RISCVISD::FU_SDC, DL, MVT::Other, Ops);
+    // Replace use of the chain result
+  CurDAG->ReplaceAllUsesWith(SDValue(S1, 0), SDValue(NewNode, 0));  // For chain
+  CurDAG->ReplaceAllUsesWith(SDValue(S2, 0), SDValue(NewNode, 0));
+
+  // Remove old stores
+  CurDAG->RemoveDeadNode(Store1);
+  CurDAG->RemoveDeadNode(Store2);
+  ReplaceNode(N, NewNode);
+
+  // Note: We cannot remove Store2 here directly.
+  // It will be dead after ReplaceNode, it will get cleaned up later.
+
+  return true;
+}
 
 void RISCVDAGToDAGISel::Select(SDNode *Node) {
   // If we have a custom node, we have already selected.
@@ -835,6 +933,11 @@ void RISCVDAGToDAGISel::Select(SDNode *Node) {
   MVT VT = Node->getSimpleValueType(0);
 
   bool HasBitTest = Subtarget->hasStdExtZbs() || Subtarget->hasVendorXTHeadBs();
+
+    // Target does not support load/store pair.
+    // if (Subtarget->hasVendorFusionMemPair())
+    //   if (tryCombineStores(Node))
+    //     return;
 
   switch (Opcode) {
   case ISD::Constant: {

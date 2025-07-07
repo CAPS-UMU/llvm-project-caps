@@ -298,6 +298,11 @@ public:
   /// TargetMachine::registerDefaultAliasAnalyses().
   AAManager buildDefaultAAPipeline();
 
+  /// Build the intended pipeline for Alias Analysis
+  ///
+  /// This also adds target-specific alias analyses registered via
+  /// TargetMachine::registerDefaultAliasAnalyses().
+  AAManager buildCapsUMUPipeline();
   /// Parse a textual pass pipeline description into a \c
   /// ModulePassManager.
   ///
