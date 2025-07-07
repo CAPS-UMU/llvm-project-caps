@@ -1,3 +1,4 @@
+#include <cstddef>
 #include <cstdlib>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/InstIterator.h>
@@ -6,7 +7,9 @@
 #include <utility>
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Argument.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
 
@@ -21,6 +24,9 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/ModRef.h"
+#include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -30,6 +36,14 @@ using namespace std;
 
 // Build the alias graph upon a module
 AliasGraph::AliasGraph(Module &M) {
+    NodeMap.clear();
+    ToNodeMap.clear();
+    FromNodeMap.clear();
+    Is_Analyze_Success = true;
+    failreason = none;
+    AnalyzedFuncSet.clear();
+    this->M = &M;
+
     set<Function *> uncalledFunctions;
 
     for(Function &F : M) 
@@ -234,14 +248,16 @@ bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
 }
 
 /// INTERPROCEDURAL ALIAS ANALYSIS
+int instrCount = 0; // for debug only
 void AliasGraph::analyzeFunction(Function* F){
     if(!F) return;
     //testing what happens if a function is analyzed several times
-    LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << " for the " << this->AnalyzedFuncSet.count(F) + 1 << "th time\n");
+    LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << "\n"); 
 
     for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
       Instruction *iInst = dyn_cast<Instruction>(&(*i));
       this->HandleInst(iInst);
+      LLVM_DEBUG(writeToDot("aliasgraph"+itostr(instrCount++)+".dot"));
     }
 }
 
@@ -266,13 +282,6 @@ StringRef getCalledFuncName(CallInst *CI) {
 }
 
 void AliasGraph::HandleOperator(Value* v){
-#include <llvm/IR/Instructions.h>
-#include <llvm/IR/Function.h>
-#include <llvm/IR/InstIterator.h>
-#include <llvm/IR/LegacyPassManager.h>
-
-#include "llvm/IR/InlineAsm.h"
-#include "llvm/Analysis/AliasGraph.h"
     GEPOperator *GEPO = dyn_cast<GEPOperator>(v);
     if(GEPO){
         this->HandleGEP(GEPO);
@@ -448,9 +457,6 @@ void AliasGraph::HandleStore(StoreInst* STI){
         return;
     }
 
-    /* if(!vop->getType()->isPointerTy()) 
-        return; */
-
     //node2 has pointed to some nodes
     if(this->ToNodeMap.count(node2)){
         AliasNode* node2_toNode = this->ToNodeMap[node2];
@@ -496,7 +502,7 @@ void AliasGraph::HandleMove(Value* v1, Value* v2){
         return;
     }
 
-    if(node1 == node2) // redundant, checkNodeConnectivity already verifies it
+    if(*node1 == *node2) // redundant, checkNodeConnectivity already verifies it
         return;
     
     if(checkNodeConnectivity(node1, node2)){
@@ -508,6 +514,9 @@ void AliasGraph::HandleMove(Value* v1, Value* v2){
 
 // f(p1, p2, ...)
 void AliasGraph::HandleCai(CallInst *CAI) {
+    // ignore debug information
+    if(CAI->isDebugOrPseudoInst()) return;
+
     //TODO : transform it to the SPATA handle call function
     if(getNode(CAI) == nullptr){
         auto* node = new AliasNode();
@@ -515,7 +524,9 @@ void AliasGraph::HandleCai(CallInst *CAI) {
         this->NodeMap[CAI] = node;
     }
 
-    auto calledFunc = CAI->getCalledFunction(); 
+    auto calledFunc = CAI->getCalledFunction();
+    if(calledFunc == nullptr) return; // indirect call
+
     auto argCallIt = CAI->arg_begin();
     auto funcArgIt = calledFunc->arg_begin();
     while (argCallIt != CAI->arg_end() && funcArgIt != calledFunc->arg_end()) {
@@ -526,8 +537,7 @@ void AliasGraph::HandleCai(CallInst *CAI) {
         }
 
         // Moving the parameter of the call to the argument of the function
-        if(!funcArgIt->onlyReadsMemory())
-            this->HandleMove(funcArgIt, *argCallIt);
+        this->HandleMove(funcArgIt, *argCallIt);
         funcArgIt++;
         argCallIt++;
     } 
@@ -553,6 +563,46 @@ void AliasGraph::HandleReturn(Function* F, CallInst* cai){
         if(ReturnInst *returnStatement = dyn_cast<ReturnInst>(&*i))
             if(Value* returnValue = returnStatement->getReturnValue())
                 this->HandleMove(returnValue, cai);
+}
+
+//===----------------------------------------------------------------------===//
+// For displaying the alias graph
+//===----------------------------------------------------------------------===//
+void AliasGraph::writeToDot(std::string Filename) {
+  errs() << "Writing '" << Filename << "'...\n";
+  std::error_code EC;
+  raw_fd_ostream File(Filename, EC, sys::fs::OF_Text);
+
+  if (EC) {
+    errs() << " error opening file : '" << Filename << "'for writing! Returning from '" << __func__ << "'\n";
+    return;
+  }
+
+  File << "digraph AliasGraph {\n";
+  std::map<AliasNode*, std::string> writtenNodes;
+  int nodeCount = 0;
+
+#define WRITE_IFNOT_WRITTEN(node) do { \
+  if (writtenNodes.find(node) == writtenNodes.end()) { \
+    std::string name = std::string("N"+to_string(++nodeCount)); \
+    node->writeToDot(File, name, M); \
+    writtenNodes[node] = name; \
+  } \
+} while(false)
+
+  for(auto [_, node] : NodeMap) {
+    WRITE_IFNOT_WRITTEN(node);
+  }
+
+  for(auto [n1, n2] : ToNodeMap) {
+    WRITE_IFNOT_WRITTEN(n1);
+    WRITE_IFNOT_WRITTEN(n2);
+    File << writtenNodes[n1] << " -> " << writtenNodes[n2] << " ; \n";
+  }
+#undef WRITE_IFNOT_WRITTEN
+
+  File << "}\n";
+  File.close();
 }
 
 //===----------------------------------------------------------------------===//
@@ -607,6 +657,17 @@ AliasResult GraphAAResult::alias(const MemoryLocation &LocA, const MemoryLocatio
 
 ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
                          AAQueryInfo &AAQI) {
+    AliasNode * node = AG.getNode(Loc);
+    Function * CalledF = Call->getCalledFunction();
+    
+    for(auto &param : Call->args()){
+        auto val = node->aliasclass.find(param.get());
+        auto arg = CalledF->getArg(param.getOperandNo());
+        if(val != node->end() && ! arg->onlyReadsMemory()) {
+            return ModRefInfo::ModRef;
+        }
+    }
+    
     return AAResultBase::getModRefInfo(Call, Loc, AAQI);
 }
 

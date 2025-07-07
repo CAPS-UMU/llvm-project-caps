@@ -10,7 +10,10 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
+#include "llvm/IR/Constant.h"
+#include "llvm/IR/DerivedUser.h"
 #include "llvm/IR/GlobalAlias.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instruction.h"
 #include <llvm/Support/Debug.h>
 #include <llvm/IR/InstIterator.h>
@@ -19,6 +22,7 @@
 #include <llvm/ADT/StringExtras.h>
 #include <llvm/Analysis/CallGraph.h>
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Value.h"
@@ -30,11 +34,26 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/LoopPass.h"
 #include <llvm/IR/LegacyPassManager.h>
+
 #include <regex>
 
 #define MAX_ANALYSIS_NUM 500
 
 namespace llvm {
+
+#define PRINT_DOT(fd_dot, value_ptr) do {\
+  std::string content = ""; \
+	for(char c : to_string(*value_ptr)) \
+		switch(c) { \
+			case '<'  : content += R"(\<)"; break; \
+			case '>'  : content += R"(\>)"; break; \
+			case '{'  : content += R"(\{)"; break; \
+			case '}'  : content += R"(\})"; break; \
+			case '\"' : content += R"(')"; break; \
+			default: content += c; \
+		} \
+  fd_dot << content << R"( ; \l)"; \
+} while(false)
 
 // MAIN CLASS NEEDED FOR ALIAS ANALYSIS USING ALIAS GRAPH
 class AliasNode;
@@ -111,7 +130,12 @@ public:
 			}
     }
 
-    void writeToDot(raw_ostream &dotFile, std::string nodeName){
+    void writeToDot(raw_ostream &dotFile, std::string nodeName, const Module * M){
+        if(aliasclass.empty()) {
+          errs() << "NOT PRINTING EMPTY NODE, RETURNS\n";
+          return;
+        }
+
         dotFile << nodeName+" [shape=record,label=\"{"+nodeName+"\\l| ";
         for(auto it = aliasclass.begin(); it != aliasclass.end(); it++){
           Value *v = *it;
@@ -120,26 +144,19 @@ public:
           } else if(auto *Inst = dyn_cast<Instruction>(v)) {
 						Function * containingFunc = Inst->getParent()->getParent();
 						dotFile << containingFunc->getName() << " : ";
-						std::string content = "";
-						for(char c : to_string(*v)) 
-							switch(c) {
-								case '<'  : content += R"(\<)"; break;
-								case '>'  : content += R"(\>)"; break;
-								case '{'  : content += R"(\{)"; break;
-								case '}'  : content += R"(\})"; break;
-								case '\"' : content += R"(\")"; break;
-								default: content += c;
-							}
-          	dotFile << content << " ; \\l ";
-					}
+					} else if(auto *Arg = dyn_cast<Argument>(v)) {
+						Function * containingFunc = Arg->getParent();
+						dotFile << containingFunc->getName() << " [arg] : ";
+          }
+          PRINT_DOT(dotFile, v);
         }
-        dotFile << "}\"];\n"; 
+        dotFile << "}\"];\n";
     }
-
 };
 
 class AliasGraph {
 public:
+    const Module * M;
     std::map<Value*, AliasNode*> NodeMap;
     std::map<AliasNode*, AliasNode*> ToNodeMap;
     std::map<AliasNode*, AliasNode*> FromNodeMap;
@@ -172,6 +189,9 @@ public:
 		bool checkNodeConnectivity(AliasNode* node1, AliasNode* node2);
     AliasNode* retraceOrigin(const MemoryLocation &MemLoc);
 
+    // To display the alias graph
+    void writeToDot(std::string Filename);
+
 		//InstHandler
 		void HandleInst(Instruction* I);
 		void HandleLoad(LoadInst* LI);
@@ -189,15 +209,6 @@ public:
 		//Interprocedural analysis
 	  void analyzeFunction(Function* F);
 };
-
-//Interprocedural analysis
-void analyzeGlobalInitializer(GlobalVariable* GV, std::list<Value *>&Future_analysis_list,  AliasGraph *aliasCtx);
-
-//Tools
-void valueSetMerge(std::set<Value*> &S1, std::set<Value*> &S2);
-unsigned getArgIndex(Function* F, Argument *Arg);
-unsigned getMin(unsigned n1, unsigned n2);
-std::string getGlobalMacroSource(GlobalVariable* GV);
 
 // Alias Analysis result on the alias graph
 class GraphAAResult : public AAResultBase {
