@@ -35,7 +35,8 @@ using namespace llvm;
 
 //#define QUERY_STATS
 //#define TEST_MODREF
-#define COMPARE_RESULT
+//#define COMPARE_RESULT
+//#define CALL_MODREF
 #define SIMPLE_EVAL
 
 #define INCR_COUNTER(result, cpt1, cpt2, cpt3, cpt4) do { \
@@ -95,9 +96,10 @@ int isCaller(const Function * F1, const Function * F2,
 
 // Get the memory manipulating instruction from the IR
 struct MemInstSets AliasTestPass::getMemInstr(Function &F) {
-  SetVector<Value *> Loads;
-  SetVector<Value *> Stores;
-  SetVector<Value *> Allocs;
+  SetVector<LoadInst *>   Loads;
+  SetVector<StoreInst *>  Stores;
+  SetVector<AllocaInst *> Allocs;
+  SetVector<CallInst *>   Calls;
 
   for(BasicBlock &BB : F) 
     for (Instruction &Inst : BB)
@@ -107,32 +109,32 @@ struct MemInstSets AliasTestPass::getMemInstr(Function &F) {
         Stores.insert(SI);
       else if (auto *AI = dyn_cast<AllocaInst>(&Inst))
         Allocs.insert(AI);
+      else if(auto *CAI = dyn_cast<CallInst>(&Inst))
+        Calls.insert(CAI);
   
-  return {Loads, Stores, Allocs};
+  return {Loads, Stores, Allocs, Calls};
 }
 
 // Get the potential parent of a Value
 // we are in particular interested in the value being an instruction / func arg
-const Function * getValueParent(const Value * V) {
+const Function * getValueFunction(const Value * V) {
   if(auto * instr = dyn_cast<Instruction>(V))
     return instr->getParent()->getParent();
   if(auto * arg = dyn_cast<Argument>(V))
     return arg->getParent();
-  if(auto * op = dyn_cast<Operator>(V))
-    errs() << "No parent function easily findable for operator : " << *op;
-  if(auto * cst = dyn_cast<Constant>(V))
-    errs() << "No parent function easily findable for constant : " << *cst;
+
   return nullptr;
 }
 
 // Try to determine if two pointers from different functions can be 
 // alias using the default AA pipeline.
 AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, AliasAnalysis &defaultAA) {
-  if(isNull(V1) || isNull(V2)) return AliasResult::NoAlias;
+  if(isNull(V1) || isNull(V2)
+     || isIdentifiedObject(V1) || isIdentifiedObject(V2)) return AliasResult::NoAlias;
 
-  auto * F1 = getValueParent(V1);
+  auto * F1 = getValueFunction(V1);
   assert(F1 != nullptr);
-  auto * F2 = getValueParent(V2);
+  auto * F2 = getValueFunction(V2);
   assert(F2 != nullptr);
 
   // if the two values are used in the same function apply the default AA pipeline
@@ -143,7 +145,7 @@ AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, Alias
      F2->getNumUses() == 0 && !F2->hasAddressTaken()) {
     // At least one of the functions is not used at all, the pointers can't alias.
     // Still, it could be a call by interruption, in an OS Kernel for instance,
-    // then if a glb variable is used in both function there could be an alias relation.
+    // then if a glb variable is used in both function there could be an alias relation ?
     return AliasResult::NoAlias;
   }
   
@@ -160,11 +162,11 @@ AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, Alias
   if(F1callF2 == -1 && F2callF1 == -1) 
     // can't be sure that one func call the other, can't determine the alias relationship
     return AliasResult::MayAlias;
+  
   if((!F1callF2 && !F2callF1) || (F1callF2 == -1 && !F2callF1)
     || (!F1callF2 && F2callF1 == -1))
     // we are sure that the two function cannot call one another
     return AliasResult::NoAlias;
-  assert(F1callF2 == 1 || F2callF1 == 1);
 
   if(F1callF2 == 1) { // F1 is the caller
     caller = F1; called = F2;
@@ -200,11 +202,9 @@ AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, Alias
     // pointer inside the called function
     return AliasResult::NoAlias;
 
-  // if we couldn't tell from context information of the function, we have to 
+  // if we couldn't tell from context information of the function, we have to know
   // if the value in the called function alias with the argument that was given the value
   // of the caller function
-  /* errs() << "Found : " << it->get()->getNameOrAsOperand() << " ; " << *it->get() <<
-         " as parameter number " << argNum << "\n";  */
   auto const * Arg = called->getArg(it->getOperandNo());
 
   LLVM_DEBUG(errs() << paramName << " matches argument : " << *Arg << '\n');
@@ -297,23 +297,34 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
 #endif // QUERY_STATS
 
   int totalRequest = 0;
-  for (Value *Load : Sets.Loads) {
-    for (Value *Store : Sets.Stores) {
-      MemoryLocation LoadLoc = MemoryLocation::get(dyn_cast<LoadInst>(Load));
-      MemoryLocation StoreLoc = MemoryLocation::get(dyn_cast<StoreInst>(Store));
+  for (auto *Load : Sets.Loads) {
+     MemoryLocation LoadLoc = MemoryLocation::get(Load);
+
+#ifdef CALL_MODREF
+    for (auto *Call : Sets.Calls){
+      ModRefInfo MRIAA = AA.getModRefInfo(Load, Call);
+      ModRefInfo MRIGraphAA = GraphAAR.getModRefInfo(Call, LoadLoc, SimpleAAQI);
+
+      errs() << " In func " << Call->getParent()->getName() << " : " 
+            << *Call << " : " << MRIAA << " ~ " << MRIGraphAA << " : " << *Load << "\n";
+    }
+
+#else
+    for (auto *Store : Sets.Stores) {
+      MemoryLocation StoreLoc = MemoryLocation::get(Store);
     
       AliasResult ARFunc = AA.alias(LoadLoc, StoreLoc);
 	    totalRequest++;
 
 #ifdef COMPARE_RESULT
-      AliasResult ARMod = GraphAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
+      AliasResult ARModule = GraphAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
       AliasResult ARGlob = GlobalsAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
 
-      if(betterAliasResult(ARMod, ARFunc)) {
+      if(betterAliasResult(ARModule, ARFunc)) {
         errs() << "\n ----------------------\n Values : \n" << *Load << " <--> " << *Store << " ]\n";
         AliasResult originAlias = tryAliasOrigin(LoadLoc, StoreLoc, GraphAAR.getGraph(), AA);  
         errs() << "Are said to be : [" << ARFunc << "] according to AA default pipeline | "
-              << "[" << ARMod << "] according to GraphAA | " 
+              << "[" << ARModule << "] according to GraphAA | " 
               << "[" << ARGlob << "] according to GlobalsAA.\n";
         errs() << "The origin of the memory location are likely to \033[32m" << originAlias << "\033[0m according to the already implemented AA.\n"
                << " -------------------------------- \n"; 
@@ -339,8 +350,8 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
       INCR_COUNTER((int)LoadLocModRef, countNoModRef, countRef, countMod, countModRef);
 #endif // QUERY_STATS
 #endif // TEST_MODREF
-
     }
+#endif // CALL_MODREF
   }
 
   errs() << "STATS ON FUNCTION " << F.getName() << " ---------------------------\n";
@@ -367,6 +378,7 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
   errs() << "END OF ANALYSIS OVER " << F.getName() << "-------------------\n"; 
 }
 
+// Simple evaluation of the alias pipeline
 void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM, 
                             ModuleAnalysisManager &MAM,
                             std::vector<unsigned int> &counts){
@@ -378,12 +390,12 @@ void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM,
 
   struct MemInstSets Sets = getMemInstr(F);
   for(auto * Load : Sets.Loads){
+    MemoryLocation LoadLoc = MemoryLocation::get(dyn_cast<LoadInst>(Load));
+    
     for(auto * Store : Sets.Stores){
-      MemoryLocation LoadLoc = MemoryLocation::get(dyn_cast<LoadInst>(Load));
       MemoryLocation StoreLoc = MemoryLocation::get(dyn_cast<StoreInst>(Store));
-      AliasResult AAR = AA.alias(LoadLoc, StoreLoc);
-      AAR = (AAR != AliasResult::MayAlias) ? AAR :
-            GraphAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
+      AliasResult AAR = GraphAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
+      AAR = (AAR == AliasResult::NoAlias) ? AAR : AA.alias(LoadLoc, StoreLoc);
       counts[(int)AAR]++;
       counts[4]++; // incr total
     }

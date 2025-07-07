@@ -26,12 +26,14 @@
 namespace llvm {
 
 struct MemInstSets {
-  SetVector<Value *> Loads;
-  SetVector<Value *> Stores;
-  SetVector<Value *> Allocs;
+  SetVector<LoadInst *> Loads;
+  SetVector<StoreInst *> Stores;
+  SetVector<AllocaInst *> Allocs;
+  SetVector<CallInst *> Calls;
 
   bool empty() {
-    return Loads.empty() && Stores.empty() && Allocs.empty();
+    return Loads.empty() && Stores.empty() 
+        && Allocs.empty() && Calls.empty();
   }
 };
 
@@ -40,8 +42,10 @@ private:
   struct MemInstSets getMemInstr(Function &F);
   void iterateOnFunction(Function &F, FunctionAnalysisManager &FAM, 
                         ModuleAnalysisManager &MAM);
+
   void evaluate(Function &F, FunctionAnalysisManager &FAM, 
-                        ModuleAnalysisManager &MAM, std::vector<unsigned int> &counts);
+                ModuleAnalysisManager &MAM, std::vector<unsigned int> &counts);
+
   bool betterAliasResult(const AliasResult &AR1, const AliasResult &AR2) {
     return AR2 == AliasResult::MayAlias && AR1 != AliasResult::MayAlias;
   }
