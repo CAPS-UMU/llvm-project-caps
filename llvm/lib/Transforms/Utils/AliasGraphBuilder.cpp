@@ -25,28 +25,18 @@
 
 using namespace llvm;
 
-AliasGraph *GLOBAL_GRAPH = nullptr;
+AliasGraph *AG = nullptr;
 
 void buildGlobalAliasGraph(Module &M) {
-  GLOBAL_GRAPH = new AliasGraph();
-  SetVector<Function *> uncalledFunctions;
-
-  for(Function &F : M) 
-    if (F.use_empty())
-      uncalledFunctions.insert(&F);
-    
-  for(Function * F : uncalledFunctions) {
-    errs() << "Analyzing function : " << F->getName() << "\n";
-    GLOBAL_GRAPH->analyzeFunction(F);
-  }
+  AG = new AliasGraph(M);
 
   LLVM_DEBUG(
     errs() << "Final Alias Graph {\n\n";
     std::set<AliasNode*> printedNode;
     int nodeCount = 0;
-    for(auto [value, node] : GLOBAL_GRAPH->NodeMap) {
+    for(auto [value, node] : AG->NodeMap) {
       if ( ! printedNode.count(node)) {
-        errs() << "Node " << nodeCount++ << " : ";
+        errs() << "Node " << ++nodeCount << " : ";
         node->print_set();
         errs() << "\n";
         printedNode.insert(node);
@@ -56,50 +46,46 @@ void buildGlobalAliasGraph(Module &M) {
   );
 }
 
-void writingAliasGraphToDot() {
-  std::string Filename = "aliasgraph.dot";
-  errs() << "Writing '" << Filename << "'...\n";
+void outputInstructionMetadata(Module &M) {
+  SmallVector<std::pair<unsigned int, MDNode *>> MDs;
+  errs()<< "//===----------------------------------------------==//\n" 
+        << "DISPLAYING METADATA ON INSTRUCTIONS -----------------\n"
+        << "//===----------------------------------------------==//\n";
 
-  std::error_code EC;
-  raw_fd_ostream File(Filename, EC, sys::fs::OF_Text);
-
-  if (EC) {
-    errs() << " error opening file : '" << Filename << "'for writing! Returning from '" << __func__ << "'\n";
-    return;
-  }
-
-  File << "digraph AliasGraph {\n";
-
-  std::map<AliasNode*, std::string> writtenNodes;
-  int nodeCount = 0;
-
-#define WRITE_IFN_WRITTEN(node) do { \
-  if (writtenNodes.find(node) == writtenNodes.end()) { \
-    std::string name = std::string("N"+to_string(++nodeCount)); \
-    node->writeToDot(File, name); \
-    writtenNodes[node] = name; \
-  } \
-} while(false)
-
-  for(auto [_, node] : GLOBAL_GRAPH->NodeMap) {
-    WRITE_IFN_WRITTEN(node);
-  }
-
-  for(auto [n1, n2] : GLOBAL_GRAPH->ToNodeMap) {
-    WRITE_IFN_WRITTEN(n1);
-    WRITE_IFN_WRITTEN(n2);
-    File << writtenNodes[n1] << " -> " << writtenNodes[n2] << " ; \n";
-  }
-#undef WRITE_IFN_WRITTEN
-
-  File << "}\n";
-  File.close();
+  for(auto &F : M)
+    for(auto &B : F)
+      for(auto &I : B) {
+        auto AAMD = I.getAAMetadata();
+        if(!AAMD.NoAlias && !AAMD.Scope && !AAMD.TBAA && !AAMD.TBAAStruct) continue;
+        errs() << I << " ; \n";
+        if(AAMD.NoAlias) { 
+          errs() << "no_alias MD : "; 
+          AAMD.NoAlias->printTree(errs(), &M);
+          errs() << "\n";
+        }
+        if(AAMD.Scope) { 
+          errs() << "scope MD : "; 
+          AAMD.Scope->printTree(errs(), &M);
+          errs() << "\n";
+        }
+        if(AAMD.TBAA) { 
+          errs() << "tbaa MD : "; 
+          AAMD.TBAA->printTree(errs(), &M);
+          errs() << "\n";
+        }
+        if(AAMD.TBAAStruct) { 
+          errs() << "tbaa_struct MD : "; 
+          AAMD.TBAAStruct->printTree(errs(), &M);
+          errs() << "\n";
+        }
+        errs() << "// -------------------------------------------- //\n";
+      }
 }
 
 PreservedAnalyses AliasGraphBuilder::run(Module &M, ModuleAnalysisManager &AM) {
-  CallGraph cg (M);
-
   buildGlobalAliasGraph(M);
-  writingAliasGraphToDot();
+  AG->writeToDot("aliasgraph.dot");
+
+  outputInstructionMetadata(M);
   return PreservedAnalyses::all();
 }
