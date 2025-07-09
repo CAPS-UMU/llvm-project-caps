@@ -525,7 +525,10 @@ void AliasGraph::HandleCai(CallInst *CAI) {
     }
 
     auto calledFunc = CAI->getCalledFunction();
-    if(calledFunc == nullptr) return; // indirect call
+    if( calledFunc == nullptr ||
+        calledFunc->getName().consume_front("llvm.lifetime")) 
+        // ignoring indirect call and function for lifetime of static alloc object
+        return;  
 
     auto argCallIt = CAI->arg_begin();
     auto funcArgIt = calledFunc->arg_begin();
@@ -655,10 +658,16 @@ AliasResult GraphAAResult::alias(const MemoryLocation &LocA, const MemoryLocatio
     return AliasResult::MayAlias;
 }
 
+// Check for each parameter of the call if they alias with the given memory location
+// i.e is in the same node in the alias graph.
+// If so, and if the corresponding argument in the function call is not readonly,
+// then return ModRef.
 ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
                          AAQueryInfo &AAQI) {
     AliasNode * node = AG.getNode(Loc);
     Function * CalledF = Call->getCalledFunction();
+    if(CalledF == nullptr) // indirect call, can't predict the effect on memory
+        return ModRefInfo::ModRef;
     
     for(auto &param : Call->args()){
         auto val = node->aliasclass.find(param.get());
