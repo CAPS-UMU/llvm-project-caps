@@ -11,8 +11,10 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AliasGraph.h"
+#include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/MemoryLocation.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalAlias.h"
@@ -35,9 +37,10 @@ using namespace llvm;
 
 //#define QUERY_STATS
 //#define TEST_MODREF
-//#define COMPARE_RESULT
+#define COMPARE_RESULT
 //#define CALL_MODREF
 #define SIMPLE_EVAL
+//#define TEST_ALL_MEMLOC
 
 #define INCR_COUNTER(result, cpt1, cpt2, cpt3, cpt4) do { \
   switch(result) { \
@@ -47,6 +50,8 @@ using namespace llvm;
     case 3: cpt4++; break; \
   } \
 } while(false)
+
+#define PROP(n, m) ((m != 0) ? (int)(100. * (float)n / (float)m) : 0)
 
 // Check if a Value is a null op or a null ptr
 bool isNull(const Value * V) {
@@ -94,6 +99,36 @@ int isCaller(const Function * F1, const Function * F2,
   return (hasIndirectCall) ? -1 : 0;
 }
 
+// Getting all the found memory 
+// location inside the given function
+SetVector<Value*> getPointers(const Function &F) {
+  SetVector<Value*> Ptrs;
+
+  for(auto * arg = F.arg_begin(); arg != F.arg_end(); arg++)
+    if(arg->getType()->isPtrOrPtrVectorTy() && !arg->getType()->isFunctionTy()) {
+      Ptrs.insert(const_cast<Argument*>(arg));
+    }
+
+  for(auto &B : F) {
+    for(auto &I : B) {
+      if (I.getType()->isPointerTy()) {
+          Ptrs.insert(const_cast<Instruction*>(&I));
+      }
+    
+      for (auto &Op : I.operands()) {
+        Value *v = Op.get();
+        if (v->getType()->isPointerTy()) {
+          if(auto *f=dyn_cast<Function>(v)) continue;
+          Ptrs.insert(v);
+        }
+      }
+    }
+  }
+
+  for(auto * v : Ptrs) errs() << "Ptrs : " << *v << "\n";
+  return Ptrs;
+}
+
 // Get the memory manipulating instruction from the IR
 struct MemInstSets AliasTestPass::getMemInstr(Function &F) {
   SetVector<LoadInst *>   Loads;
@@ -129,8 +164,7 @@ const Function * getValueFunction(const Value * V) {
 // Try to determine if two pointers from different functions can be 
 // alias using the default AA pipeline.
 AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, AliasAnalysis &defaultAA) {
-  if(isNull(V1) || isNull(V2)
-     || isIdentifiedObject(V1) || isIdentifiedObject(V2)) return AliasResult::NoAlias;
+  if(isNull(V1) || isNull(V2)) return AliasResult::NoAlias;
 
   auto * F1 = getValueFunction(V1);
   assert(F1 != nullptr);
@@ -183,20 +217,19 @@ AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, Alias
   auto it = callsite->arg_begin();
   auto paramName = callParam->getNameOrAsOperand();
 
-  LLVM_DEBUG(errs() << "Iterating through callsite "<< *callsite 
+  LLVM_DEBUG(dbgs() << "Iterating through callsite "<< *callsite 
                     << " ; Looking for " << paramName << " : " << *callParam << " in the call parameters :\n");
 
   bool usedByCall = it->get()->getNameOrAsOperand() == paramName;
   while(it != callsite->arg_end() && !usedByCall) {
-    LLVM_DEBUG(errs() << "id : " << it->get()->getNameOrAsOperand() 
+    LLVM_DEBUG(dbgs() << "id : " << it->get()->getNameOrAsOperand() 
                       << " : " << *it->get() << "\n");
     usedByCall = (it->get()->getNameOrAsOperand() == paramName);
     if(!usedByCall) it++;
-    LLVM_DEBUG(if(usedByCall) errs() << "Param found in the call\n");
+    LLVM_DEBUG(if(usedByCall) dbgs() << "Param found in the call\n");
   }
 
-  if (const MemoryEffects &M = called->getMemoryEffects(); 
-      !usedByCall || M.doesNotAccessMemory() || M.onlyReadsMemory())
+  if (!usedByCall || called->getMemoryEffects().doesNotAccessMemory())
     // If the value in the caller function isn't used in the call, or 
     // if the called function does not modify memory, then it won't alias any 
     // pointer inside the called function
@@ -207,7 +240,7 @@ AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, Alias
   // of the caller function
   auto const * Arg = called->getArg(it->getOperandNo());
 
-  LLVM_DEBUG(errs() << paramName << " matches argument : " << *Arg << '\n');
+  LLVM_DEBUG(dbgs() << paramName << " matches argument : " << *Arg << '\n');
   if(Arg->onlyReadsMemory()) return AliasResult::NoAlias;
   return defaultAA.alias(Arg, calledVal);
 }
@@ -360,7 +393,8 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
   errs() << "GraphAA result that are better than default AA result :  " << betterResult << "\n"
   		 << "Total number of queries : " << totalRequest << "\n"
   		 << "Percentgage over the total of queries : " 
-       << (int)(100 * (float)betterResult / (float)((!totalRequest)? 1 : totalRequest)) << "%\n";
+       << ((!totalRequest)? 0 : 
+          (int)(100 * (float)betterResult / (float)totalRequest)) << "%\n";
 #endif //COMPARE_RESULT
 
 #ifdef QUERY_STATS
@@ -378,15 +412,76 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
   errs() << "END OF ANALYSIS OVER " << F.getName() << "-------------------\n"; 
 }
 
+// Test between all the pair of memory location found in each function
+void pairEvaluate(Function &F, ModuleAnalysisManager &MAM,
+                  FunctionAnalysisManager &FAM) {
+  if(F.empty()) return;
+
+  AliasAnalysis &AA = FAM.getResult<AAManager>(F);
+  GraphAAResult &GraphAAR = MAM.getResult<GraphAA>(*(F.getParent()));
+  SimpleAAQueryInfo SimpleAAQI (AA);
+
+  SetVector<Value*> Ptrs = getPointers(F);
+
+  errs() << "// *************************************************************************** //\n"
+         << " IN FUNCTION : " << F.getName() << "\n"
+         << "// *************************************************************************** //\n";
+  for(auto * ptr1 : Ptrs) {
+    for(auto * ptr2 : Ptrs) {
+      AliasResult GrAR = GraphAAR.alias(
+          MemoryLocation(ptr1, LocationSize::beforeOrAfterPointer()), 
+          MemoryLocation(ptr2, LocationSize::beforeOrAfterPointer()), 
+          SimpleAAQI, nullptr);
+      AliasResult DefAR = AA.alias(ptr1, ptr2);
+
+      assert(
+        (GrAR != AliasResult::NoAlias) || (DefAR != AliasResult::MustAlias && DefAR != AliasResult::PartialAlias)
+        && "Contradiction in results between graph-aa and default-aa-pipeline."
+      );
+      AliasResult AAR = (GrAR == AliasResult::NoAlias) ? GrAR : DefAR;
+
+      errs() << "alias ( " << *ptr1 << ", \n"
+             << "        " << *ptr2 << ") = \033[32m" << AAR << "\033[0m;\n"
+             << "//===-------------------------------------------------------------------==//\n";
+    }
+  }
+}
+
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+std::vector<unsigned int> defCounts      (5,0);
+std::vector<unsigned int> basicCounts    (5,0);
+std::vector<unsigned int> graphCounts    (5,0);
+std::vector<unsigned int> graphDefCounts (5,0);
+
+#define PRINT_STAT(aa_name, counts) do { \
+    errs() << "Result of " << aa_name << " query on loads and store : \n" \
+        << "Total query performed : " << counts[4] << "\n" \
+        << "NoAlias : " << counts[0] << "; MayAlias :" << counts[1]  \
+        << "; PartialAlias : " << counts[2] << "; MustAlias : " << counts[3] << "\n"; \
+   \
+    if(counts[4]!=0) { \
+      errs() << "Part in percent : no=" << PROP(counts[0], counts[4]) << "%/"  \
+             << "may=" << PROP(counts[1], counts[4]) << "%/" \
+             << "part=" << PROP(counts[2], counts[4]) << "%/" \
+             << "must=" << PROP(counts[3], counts[4]) << "%\n" \
+             << " // -------------------------------------------------- //\n"; \
+    } \
+} while(false)
+
+
 // Simple evaluation of the alias pipeline
 void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM, 
                             ModuleAnalysisManager &MAM,
                             std::vector<unsigned int> &counts){
   if(F.empty()) return;
 
-  AliasAnalysis &AA = FAM.getResult<AAManager>(F);
+  AliasAnalysis &DefAAPipeline = FAM.getResult<AAManager>(F);
+  BasicAAResult &BasicAAR = FAM.getResult<BasicAA>(F);
   GraphAAResult &GraphAAR = MAM.getResult<GraphAA>(*(F.getParent()));
-  SimpleAAQueryInfo SimpleAAQI (AA);
+
+  SimpleAAQueryInfo SimpleAAQI (DefAAPipeline);
 
   struct MemInstSets Sets = getMemInstr(F);
   for(auto * Load : Sets.Loads){
@@ -394,39 +489,50 @@ void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM,
     
     for(auto * Store : Sets.Stores){
       MemoryLocation StoreLoc = MemoryLocation::get(dyn_cast<StoreInst>(Store));
-      AliasResult AAR = GraphAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
-      AAR = (AAR == AliasResult::NoAlias) ? AAR : AA.alias(LoadLoc, StoreLoc);
-      counts[(int)AAR]++;
-      counts[4]++; // incr total
+      AliasResult GrAR = GraphAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
+      AliasResult BasAR = BasicAAR.alias(LoadLoc, StoreLoc, SimpleAAQI, nullptr);
+      AliasResult DefAR = DefAAPipeline.alias(LoadLoc, StoreLoc);
+
+      assert(
+        (GrAR != AliasResult::NoAlias) || (DefAR != AliasResult::MustAlias && DefAR != AliasResult::PartialAlias)
+        && "Contradiction in results between graph-aa and default-aa-pipeline."
+      );
+      AliasResult GraphDefAR = (GrAR == AliasResult::MayAlias) ? DefAR : GrAR;
+      
+      defCounts[(int)DefAR]++; defCounts[4]++;
+      basicCounts[(int)BasAR]++; basicCounts[4]++;
+      graphCounts[(int)GrAR]++; graphCounts[4]++;
+      graphDefCounts[(int)GraphDefAR]++; graphDefCounts[4]++;
     }
   }
+
+  errs() << "In function : \033[31m" << F.getName() << "\033[0m \n";
+  PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphCounts);
+  PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicCounts);
+  PRINT_STAT("\033[32mDEFAULT AA PIPELINE\033[0m", defCounts);
+  PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefCounts);
+  errs() << "//====================================================================//\n\n";
 }
 
+// ---------------------------------------------
 PreservedAnalyses AliasTestPass::run(Module &M,
                                       ModuleAnalysisManager &AM) {
   FunctionAnalysisManager &FAM =
         AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-  std::vector<unsigned int> counts (5, 0);
+  
+  /* Triple ModuleTriple(M.getTargetTriple());
+  auto * TLII = new TargetLibraryInfoImpl(ModuleTriple);
+  auto * TLI = new TargetLibraryInfo(*TLII); */
 
+  std::vector<unsigned int> counts (5, 0);
   for(auto &F : M) {
 #ifdef SIMPLE_EVAL
     this->evaluate(F, FAM, AM, counts);
+#elif defined(TEST_ALL_MEMLOC)
+    pairEvaluate(F, AM, FAM);
 #else
     this->iterateOnFunction(F, FAM, AM);
 #endif //SIMPLE_EVAL
-  }
-
-  errs() << M.getName() << " result of default + graph AA query on loads and store : \n"
-      << "Total query performed : " << counts[4] << "\n"
-      << "NoAlias : " << counts[0] << "; MayAlias :" << counts[1] 
-      << "; PartialAlias : " << counts[2] << "; MustAlias : " << counts[3] << "\n";
-
-  if(counts[4]!=0) {
-    #define PROP(n) (int)(100. * (float)n / (float)counts[4])
-    errs() << "Part in percent : no=" << PROP(counts[0]) << "%/" 
-           << "may=" << PROP(counts[1]) << "%/"
-           << "part=" << PROP(counts[2]) << "%/"
-           << "must=" << PROP(counts[3]) << "%\n"; 
   }
 
   return PreservedAnalyses::all();
