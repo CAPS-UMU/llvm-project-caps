@@ -25,6 +25,7 @@
 #include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
+#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -2136,7 +2137,6 @@ AAManager PassBuilder::buildCapsUMUPipeline() {
     AA.registerModuleAnalysis<GlobalsAA>();
     AA.registerModuleAnalysis<GraphAA>();
   }
-
 
   // Add target-specific alias analyses.
   if (TM)

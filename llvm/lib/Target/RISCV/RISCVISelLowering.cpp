@@ -13481,6 +13481,81 @@ static SDValue performMemPairCombine(SDNode *N,
   return SDValue();
 }
 
+// static SDValue performFusionLoadStoreCombine(SDNode *N, SelectionDAG &DAG, const RISCVSubtarget &Subtarget) {
+//   SDLoc DL(N);
+//   SDValue Chain = N->getOperand(0);
+//   SDValue BasePtr = N->getOperand(1);
+//   int64_t Imm1 = cast<ConstantSDNode>(N->getOperand(2))->getSExtValue();
+//   int64_t Imm2 = cast<ConstantSDNode>(N->getOperand(3))->getSExtValue();
+  
+//   EVT MemVT = N->getValueType(0);
+//   MVT XLenVT = Subtarget.getXLenVT();
+
+//   // Compute offset between accesses and verify in range
+//   int64_t Offset = Imm2 - Imm1;
+//   if (Offset != (int)Offset) return SDValue(); // Sanity check
+
+//   // Create actual load addresses
+//   SDValue Addr1 = DAG.getMemBasePlusOffset(BasePtr, Imm1, DL);
+//   SDValue Addr2 = DAG.getMemBasePlusOffset(BasePtr, Imm2, DL);
+
+//   // Create individual loads to query properties
+//   auto *LSNode1 = cast<LoadSDNode>(DAG.getNode(ISD::LOAD, DL, MemVT, Chain, Addr1));
+//   auto *LSNode2 = cast<LoadSDNode>(DAG.getNode(ISD::LOAD, DL, MemVT, Chain, Addr2));
+//   if (!LSNode1 || !LSNode2) return SDValue();
+
+//   // Compute total size of memory accessed
+//   unsigned Size1 = MemVT.getSizeInBits() / 8;
+//   unsigned Size2 = MemVT.getSizeInBits() / 8;
+//   unsigned TotalSize = Size1 + Size2;
+
+//   // Use worst-case alignment (safe default), or compute common
+//   Align Align1 = LSNode1->getOriginalAlign();
+//   Align Align2 = LSNode2->getOriginalAlign();
+//   Align NewAlign = commonAlignment(Align1, Align2);
+
+//   // Compute common MMO flags
+//   MachineMemOperand::Flags MMOFlags =
+//     LSNode1->getMemOperand()->getFlags() | LSNode2->getMemOperand()->getFlags();
+
+//   // Generate new MMO
+//   MachineFunction &MF = DAG.getMachineFunction();
+//   MachinePointerInfo MPI = LSNode1->getMemOperand()->getPointerInfo(); // Use lowest address
+//   MachineMemOperand *NewMMO = MF.getMachineMemOperand(
+//       MPI, MMOFlags, TotalSize, NewAlign);
+
+//   // Get pseudo opcode node type
+//   unsigned Opcode;
+//   if (MemVT == MVT::f64) {
+//     Opcode = RISCVISD::FU_FLD;
+//   } else if (MemVT == MVT::f32) {
+//     Opcode = RISCVISD::FU_FLW;
+//   } else {
+//     // Add more types if needed
+//     return SDValue();
+//   }
+
+//   // Create fused node result type: val1, val2, chain
+//   SDVTList VTs = DAG.getVTList(MemVT, MemVT, MVT::Other);
+
+//   // Generate fused node
+//   SDValue Res = DAG.getMemIntrinsicNode(Opcode, DL, VTs,
+//                                         {Chain, BasePtr,
+//                                          DAG.getConstant(Imm1, DL, XLenVT),
+//                                          DAG.getConstant(Imm2, DL, XLenVT)},
+//                                         MemVT, NewMMO);
+
+//   // Replace uses of original loads
+//   DAG.ReplaceAllUsesWith(N, Res.getValue(0)); // assume N was first load
+//   for (SDNode *Use : N->uses()) {
+//     if (Use != Res.getNode()) {
+//       Use->replaceUsesOfWith(N, Res.getValue(0));
+//     }
+//   }
+
+//   return Res;
+// }
+
 // Helper function for performFusionMemPairCombine.
 // Try to combine the memory loads/stores LSNode1 and LSNode2
 // into a single memory pair operation.
@@ -13517,11 +13592,17 @@ static std::unordered_map<int64_t, int> ImmCount;
   EVT MemVT = LSNode1->getMemoryVT();
   EVT MemVT2 = LSNode2->getMemoryVT();
   EVT NewMemVT;
+  EVT VTO = LSNode1->getValueType(0);
+  EVT VT1 = LSNode2->getValueType(0);
   if (MemVT == MVT::i32) {
     NewMemVT = MVT::i64;
   } else if (MemVT == MVT::f32) {
     NewMemVT = MVT::f64;
-  } else if (MemVT == MVT::i64) {
+  }else if (MemVT == MVT::i16) {
+    NewMemVT = MVT::i32;
+  } else if (MemVT == MVT::i8) {
+    NewMemVT = MVT::i16;
+  }else if (MemVT == MVT::i64) {
     NewMemVT = MVT::i128;
   }else if(MemVT == MVT::f64){
     NewMemVT = MVT::f128;
@@ -13529,9 +13610,21 @@ static std::unordered_map<int64_t, int> ImmCount;
     return SDValue(); // Unsupported type
   }
   MachineMemOperand *MMO = LSNode1->getMemOperand();
-  MachineMemOperand *NewMMO = MF.getMachineMemOperand(
-      MMO, MMO->getPointerInfo(), (MemVT == MVT::i32 || MemVT == MVT::f32) ? 8 : 
-      (MemVT == MVT::i64 || MemVT == MVT::f64) ? 16 : 0 );
+  Align OriginalAlign = MMO->getAlign();
+  Align TypeAlign =
+      (MemVT == MVT::i64 || MemVT == MVT::f64) ? Align(8) :
+      (MemVT == MVT::i32 || MemVT == MVT::f32) ? Align(4) :
+      (MemVT == MVT::i16)                      ? Align(2) :
+      (MemVT == MVT::i8)                       ? Align(1) :
+                                                OriginalAlign; // fallback if unknown
+  unsigned NewAlignValue = std::max(OriginalAlign.value(), TypeAlign.value());
+  uint64_t MemSize = MemVT.getStoreSize();
+MachineMemOperand *NewMMO = MF.getMachineMemOperand(
+    MMO, MMO->getPointerInfo(),
+    (MemVT == MVT::i64 || MemVT == MVT::f64) ? 16 :
+    (MemVT == MVT::i32 || MemVT == MVT::f32) ? 8 :
+    (MemVT == MVT::i16)                      ? 4 :
+    (MemVT == MVT::i8)                       ? 2 : 0);
 
   if (Imm < -2048 || Imm > 2047 || Imm2 < -2048 || Imm2 > 2047) {
     // Handle out-of-range immediate values
@@ -13548,24 +13641,43 @@ static std::unordered_map<int64_t, int> ImmCount;
     EVT evt = LSNode1->getSimpleValueType(0);
     unsigned Opcode;
       if (MemVT == MVT::f32){
+        //return SDValue(); //comment this to fuse loads
       LLVM_DEBUG(dbgs() << "Using FU_FLW for floating point load\n");
       Opcode = RISCVISD::FU_FLW;
       } else if(MemVT == MVT::f64){
+        //return SDValue(); //comment this to fuse loads
       LLVM_DEBUG(dbgs() << "Using FU_FLD for floating point load\n");
       Opcode = RISCVISD::FU_FLD;
       }else if (MemVT == MVT::i32){
         //return SDValue(); //comment this to fuse loads
+        Opcode = (Ext == ISD::ZEXTLOAD) ? RISCVISD::FU_LWUD : RISCVISD::FU_LWD;
+        LLVM_DEBUG(dbgs() << "Using FU_LWUD/FU_LWD for integer load\n");
+        //return SDValue(); //comment this to fuse loads
         //LLVM_DEBUG(dbgs() << "Using FU_LWD for integer load\n");
-        Opcode = RISCVISD::FU_LWD;
+        // Opcode = RISCVISD::FU_LWD;
       } else if (MemVT == MVT::i64){
         //return SDValue(); //comment this to fuse loads
         //LLVM_DEBUG(dbgs() << "Using FU_LDD for integer load\n");
+        LLVM_DEBUG(dbgs() << "Using FU_LDD for floating point load\n");
         Opcode = RISCVISD::FU_LDD;
+      } else if(MemVT == MVT::i16){
+        //return SDValue(); //comment this to fuse loads
+        //LLVM_DEBUG(dbgs() << "Using FU_LHD for integer load\n");
+        LLVM_DEBUG(dbgs() << "Using FU_LHUD/LHD for floating point load\n");
+        Opcode = (Ext == ISD::ZEXTLOAD) ? RISCVISD::FU_LHUD : RISCVISD::FU_LHD;
+        // Opcode = RISCVISD::FU_LHD;
+      } else if(MemVT == MVT::i8){
+        //return SDValue(); //comment this to fuse loads
+        //LLVM_DEBUG(dbgs() << "Using FU_LBD for integer load\n");
+        LLVM_DEBUG(dbgs() << "Using FU_LBUD/LBD for floating point load\n");
+        Opcode = (Ext == ISD::ZEXTLOAD) ? RISCVISD::FU_LBUD : RISCVISD::FU_LBD;
+      }else{
+        return SDValue(); // Unsupported type
       }
-    
-    if(MemVT == MVT::i32 || MemVT == MVT::i64){
+
+    if(MemVT == MVT::i32 || MemVT == MVT::i64 || MemVT == MVT::i16 || MemVT == MVT::i8){
       SDValue Res = DAG.getMemIntrinsicNode(
-          Opcode, SDLoc(LSNode1), DAG.getVTList({XLenVT, XLenVT, MVT::Other}),
+          Opcode, SDLoc(LSNode1), DAG.getVTList({VTO, VT1, MVT::Other}),
           {LSNode1->getChain(),
           BasePtr, DAG.getConstant(Imm, SDLoc(LSNode1), XLenVT), DAG.getConstant(Imm2, SDLoc(LSNode2), XLenVT)},
           NewMemVT, NewMMO);
@@ -13574,7 +13686,29 @@ static std::unordered_map<int64_t, int> ImmCount;
           DAG.getMergeValues({Res.getValue(0), Res.getValue(2)}, SDLoc(LSNode1));
       SDValue Node2 =
           DAG.getMergeValues({Res.getValue(1), Res.getValue(2)}, SDLoc(LSNode2));    
-          DAG.ReplaceAllUsesWith(LSNode2, Node2.getNode());
+          SDNode *From = LSNode2;
+          SDNode *To = Node2.getNode();
+          unsigned NumVals = From->getNumValues();
+          assert(NumVals == To->getNumValues() && "Mismatched number of results");
+          for (unsigned i = 0; i < NumVals; ++i) {
+            if (!From->hasAnyUseOfValue(i))
+              continue;
+            if(From->getValueType(i) != To->getValueType(i)){
+                llvm::MVT FromVT = From->getValueType(i).getSimpleVT();
+                llvm::MVT ToVT = To->getValueType(i).getSimpleVT();
+                llvm::errs() << "Index " << i << ": FromVT = ";
+                FromVT.print(llvm::errs());
+                llvm::errs() << ", ToVT = ";
+                ToVT.print(llvm::errs());
+                llvm::errs() << "\n";
+            }
+            // Check types match (optional sanity check)
+            assert(From->getValueType(i) == To->getValueType(i) &&
+                  "Result types must match for safe replacement");
+
+            DAG.ReplaceAllUsesOfValueWith(SDValue(From, i), SDValue(To, i));
+          }
+          //DAG.ReplaceAllUsesWith(LSNode2, Node2.getNode());
           LSNode1->isfused = true;
           LSNode2->isfused = true;
           LLVM_DEBUG(dbgs() << "Res in fused: "; Res.dump() ; dbgs() << "\n");
@@ -13590,9 +13724,23 @@ static std::unordered_map<int64_t, int> ImmCount;
 
               SDValue Node1 =
               DAG.getMergeValues({Res.getValue(0), Res.getValue(2)}, SDLoc(LSNode1));
-          SDValue Node2 =
+              SDValue Node2 =
               DAG.getMergeValues({Res.getValue(1), Res.getValue(2)}, SDLoc(LSNode2));
-              DAG.ReplaceAllUsesWith(LSNode2, Node2.getNode());
+              SDNode *From = LSNode2;
+              SDNode *To = Node2.getNode();
+              unsigned NumVals = From->getNumValues();
+              assert(NumVals == To->getNumValues() && "Mismatched number of results");
+              for (unsigned i = 0; i < NumVals; ++i) {
+                if (!From->hasAnyUseOfValue(i))
+                  continue;
+
+                // Check types match (optional sanity check)
+                assert(From->getValueType(i) == To->getValueType(i) &&
+                      "Result types must match for safe replacement");
+
+                DAG.ReplaceAllUsesOfValueWith(SDValue(From, i), SDValue(To, i));
+              }
+              //DAG.ReplaceAllUsesWith(LSNode2, Node2.getNode());
               // DAG.DeleteNode(LSNode2);
               LSNode1->isfused = true;
               LSNode2->isfused = true;
@@ -13628,14 +13776,16 @@ LLVM_DEBUG(dbgs() << "XLenVT type: " << XLenVT << "\n");
     // DAG.ReplaceAllUsesWith(LSNode1, Node1.getNode());
     // return Node1;
   } else {
-    //return SDValue(); //comment this to fuse stores
+    // return SDValue(); //comment this to fuse stores
     unsigned Opcode;
      EVT evt = LSNode1->getMemoryVT();
 
       if (MemVT == MVT::f32){
+        //return SDValue(); //comment this to fuse stores
       LLVM_DEBUG(dbgs() << "Using FU_FSW for floating point store\n");
       Opcode = RISCVISD::FU_FSW;
       } else if(MemVT == MVT::f64){
+        //return SDValue(); //comment this to fuse stores
       LLVM_DEBUG(dbgs() << "Using FU_FSD for floating point store\n");
       Opcode = RISCVISD::FU_FSD;
       }else if (MemVT == MVT::i32){
@@ -13646,6 +13796,16 @@ LLVM_DEBUG(dbgs() << "XLenVT type: " << XLenVT << "\n");
       //return SDValue(); //comment this to fuse stores
       LLVM_DEBUG(dbgs() << "Using FU_SDD for integer store\n");
       Opcode = RISCVISD::FU_SDD;
+      } else if(MemVT == MVT::i16){
+      //return SDValue(); //comment this to fuse stores
+      LLVM_DEBUG(dbgs() << "Using FU_SHD for integer store\n");
+      Opcode = RISCVISD::FU_SHD;
+      } else if(MemVT == MVT::i8){
+      return SDValue(); //comment this to fuse stores
+      LLVM_DEBUG(dbgs() << "Using FU_SBD for integer store\n");
+      Opcode = RISCVISD::FU_SBD;
+      } else {
+        return SDValue(); // Unsupported type
       }
 
     SDValue Res = DAG.getMemIntrinsicNode(
@@ -13653,11 +13813,24 @@ LLVM_DEBUG(dbgs() << "XLenVT type: " << XLenVT << "\n");
         {LSNode1->getChain(), LSNode1->getOperand(1), LSNode2->getOperand(1),
          BasePtr, DAG.getConstant(Imm, SDLoc(LSNode1), XLenVT), DAG.getConstant(Imm2, SDLoc(LSNode2), XLenVT)},
         NewMemVT, NewMMO);
+    SDNode *From = LSNode2;
+    SDNode *To = Res.getNode();
+    unsigned NumVals = From->getNumValues();
+    assert(NumVals == To->getNumValues() && "Mismatched number of results");
+    for (unsigned i = 0; i < NumVals; ++i) {
+      if (!From->hasAnyUseOfValue(i))
+        continue;
 
-    DAG.ReplaceAllUsesWith(LSNode2, Res.getNode());
+      // Check types match (optional sanity check)
+      assert(From->getValueType(i) == Res->getValueType(i) &&
+            "Result types must match for safe replacement");
+
+      DAG.ReplaceAllUsesOfValueWith(SDValue(From, i), Res.getValue(i));
+    }
+    // DAG.ReplaceAllUsesWith(LSNode2, Res.getNode());
     LSNode1->isfused = true;
     LSNode2->isfused = true;
-    LLVM_DEBUG(dbgs() << "Res in fused: "; Res.dump() ; dbgs() << "\n");
+    LLVM_DEBUG(dbgs() << "Res in fused: "; Res->dump() ; dbgs() << "\n");
     
     return Res;
   }
@@ -13677,7 +13850,72 @@ bool areAllElementsSame(const std::queue<const LSBaseSDNode*>& q) {
   }
   return true;
 }
+/// Walks the memory chain from Start to End, collecting intermediate nodes.
+/// Returns true if End is found, false otherwise.
+bool collectNodesBetween(SDNode *Start, SDNode *End, SmallVectorImpl<SDNode *> &InterveningNodes) {
+  SDNode *Current = Start->getOperand(0).getNode(); // Chain input of Start
 
+  // Prevent infinite loops
+  SmallPtrSet<SDNode *, 8> Visited;
+
+  while (Current && Current != End) {
+    if (!Visited.insert(Current).second)
+      break; // Loop detected
+
+    unsigned Opc = Current->getOpcode();
+    if (Opc != ISD::TokenFactor && Opc != ISD::EntryToken) {
+      InterveningNodes.push_back(Current);
+    }
+
+    // Follow the chain
+    if (Current->getNumOperands() > 0 &&
+        Current->getOperand(0).getValueType() == MVT::Other) {
+      Current = Current->getOperand(0).getNode();
+    } else {
+      break;
+    }
+  }
+
+  return Current == End;
+}
+/// Returns true if the store is part of 4 or more consecutive simple stores
+/// with the same base pointer (or at least in the same region).
+static bool isPartOfLargeStoreGroup(SDNode *N, SelectionDAG &DAG) {
+  // SelectionDAG &DAG = DCI.DAG;
+  MachineFunction &MF = DAG.getMachineFunction();
+  SDValue Chain = N->getOperand(0);
+  SDNode *Store1 = N;
+
+  // Count forward from N in the DAG.
+  int StoreGroupCount = 1; // count N itself
+
+  // Go through DAG nodes in order after N
+  bool FoundN = false;
+  for (auto &Node : DAG.allnodes()) {
+    if (&Node == Store1) {
+      FoundN = true;
+      continue;
+    }
+    if (!FoundN)
+      continue;
+
+    if (auto *NextStore = dyn_cast<StoreSDNode>(&Node)) {
+      if (!NextStore->isSimple() || NextStore->isIndexed())
+        break;
+
+      if (NextStore->getChain() != Chain)
+        break;
+
+      StoreGroupCount++;
+      if (StoreGroupCount >= 3)
+        return true;
+    } else {
+      break;
+    }
+  }
+
+  return false;
+}
 // Try to combine two adjacent loads/stores to a single pair instruction from
 // the FusionMemPair vendor extension.
 static SDValue performFusionMemPairCombine(SDNode *N,
@@ -13720,44 +13958,47 @@ static int Lastoffset2 = 0;
   };
 
   auto [Base1, Offset1] = ExtractBaseAndOffset(LSNode1->getOperand(OpNum));
-
+  llvm::DenseMap<SDNode *, bool> FusedNodes;
+  SmallPtrSet<const SDNode *, 16> UsedStoreNodes;
+  llvm::DenseSet<SDValue> UsedStoreValues;
+  llvm::DenseSet<SDValue> UsedStoreVals;
   SDValue Chain = N->getOperand(0);
 /////////////////
-  for (SDNode::use_iterator UI = Chain->use_begin(), UE = Chain->use_end();
-       UI != UE; ++UI) {
-    SDUse &Use = UI.getUse();
-    if (Use.getUser() != N && Use.getResNo() == 0 &&
-        Use.getUser()->getOpcode() == N->getOpcode()) {
-      LSBaseSDNode *LSNode2 = cast<LSBaseSDNode>(Use.getUser());
+  // for (SDNode::use_iterator UI = Chain->use_begin(), UE = Chain->use_end();
+  //      UI != UE; ++UI) {
+  //   SDUse &Use = UI.getUse();
+  //   if (Use.getUser() != N && Use.getResNo() == 0 &&
+  //       Use.getUser()->getOpcode() == N->getOpcode()) {
+  //     LSBaseSDNode *LSNode2 = cast<LSBaseSDNode>(Use.getUser());
 
-      // No volatile, indexed or atomic loads/stores.
-      if (!LSNode2->isSimple() || LSNode2->isIndexed())
-        continue;
+  //     // No volatile, indexed or atomic loads/stores.
+  //     if (!LSNode2->isSimple() || LSNode2->isIndexed())
+  //       continue;
       
-      if(LSNode2->isfused){
-        continue;
-      }
-      // Check if LSNode1 and LSNode2 have the same type and extension.
-      if (LSNode1->getOpcode() == ISD::LOAD)
-        if (cast<LoadSDNode>(LSNode2)->getExtensionType() !=
-            cast<LoadSDNode>(LSNode1)->getExtensionType())
-          continue;
+  //     if(LSNode2->isfused){
+  //       continue;
+  //     }
+  //     // Check if LSNode1 and LSNode2 have the same type and extension.
+  //     if (LSNode1->getOpcode() == ISD::LOAD)
+  //       if (cast<LoadSDNode>(LSNode2)->getExtensionType() !=
+  //           cast<LoadSDNode>(LSNode1)->getExtensionType())
+  //         continue;
 
-      if (LSNode1->getMemoryVT() != LSNode2->getMemoryVT())
-        continue;
+  //     if (LSNode1->getMemoryVT() != LSNode2->getMemoryVT())
+  //       continue;
 
-      auto [Base2, Offset2] = ExtractBaseAndOffset(LSNode2->getOperand(OpNum));
+  //     auto [Base2, Offset2] = ExtractBaseAndOffset(LSNode2->getOperand(OpNum));
 
-      // Check if the base pointer is the same for both instruction.
-      if (Base1 != Base2)
-        continue;
-    //Lastoffset2 = Offset2;
-      // // Print LSNode1 and LSNode2 using LLVM_DEBUG
-      // LLVM_DEBUG(dbgs() << "LSNode1: "; LSNode1->dump(); dbgs() << "\n");
-      LLVM_DEBUG(dbgs() << "LSNode2: "; LSNode2->dump(); dbgs() << "\n");
+  //     // Check if the base pointer is the same for both instruction.
+  //     if (Base1 != Base2)
+  //       continue;
+  //   //Lastoffset2 = Offset2;
+  //     // // Print LSNode1 and LSNode2 using LLVM_DEBUG
+  //     // LLVM_DEBUG(dbgs() << "LSNode1: "; LSNode1->dump(); dbgs() << "\n");
+  //     LLVM_DEBUG(dbgs() << "LSNode2: "; LSNode2->dump(); dbgs() << "\n");
 
-    }
-  }
+  //   }
+  // }
 /////////////////////////  
   for (SDNode::use_iterator UI = Chain->use_begin(), UE = Chain->use_end();
        UI != UE; ++UI) {
@@ -13817,13 +14058,129 @@ static int Lastoffset2 = 0;
       } else if (MemVT == MVT::f64) {
           if (std::abs(static_cast<int>(Offset2) - static_cast<int>(Offset1)) <= 64)
             Valid = true;
+      } else if (MemVT == MVT::i16) {
+          if (std::abs(static_cast<int>(Offset2) - static_cast<int>(Offset1)) <= 64)
+            Valid = true;
+      } else if (MemVT == MVT::i8) {
+          if (std::abs(static_cast<int>(Offset2) - static_cast<int>(Offset1)) <= 64)
+            Valid = true;
       }
+
       LLVM_DEBUG(dbgs() << "MemVT: " << MemVT << "\n");
       LLVM_DEBUG(dbgs() << "Offset1: " << static_cast<int>(Offset1) << ", Offset2: " << static_cast<int>(Offset2) << "\n");
       LLVM_DEBUG(dbgs() << "Valid: " << Valid << "\n");
       if (!Valid)
         continue;
 
+      if(LSNode2->getOpcode() == ISD::STORE && MemVT == MVT::i64 && bool(false)){
+        LLVM_DEBUG(dbgs() << "Node store value: "; LSNode2->dump(); dbgs() << "\n");
+        int64_t Size = 16; // For sd (sd)
+        int64_t Start1 = Offset1;
+        int64_t End1   = Offset1 + Size;
+       int64_t Start2 = Offset2;
+       int64_t End2   = Offset2 + Size;
+       // Check for any overlap in memory regions
+       bool Overlap = (Start1 < End2) && (Start2 < End1);
+       if (Overlap) {
+         // Skip fusion: memory ranges overlap
+         return SDValue();
+       }
+
+       if (Offset2 < Offset1) {
+         std::swap(LSNode1, LSNode2);
+         std::swap(Offset1, Offset2);
+       }
+     // Skip already fused instructions.
+     if (FusedNodes.lookup(LSNode2))
+       continue;
+
+     if (UsedStoreNodes.count(LSNode2) || UsedStoreNodes.count(LSNode1))
+       continue; // Already used in a pair
+
+      // Found a matching node. Mark both as fused.
+      FusedNodes[LSNode1] = true;
+      FusedNodes[LSNode2] = true;
+      // Then mark them as used
+      UsedStoreNodes.insert(LSNode2);
+      UsedStoreNodes.insert(LSNode1);
+
+       if (isPartOfLargeStoreGroup(LSNode1, DAG)) {
+         // Don't try to pack this store
+       continue;
+       }     
+
+     }else if(LSNode2->getOpcode() == ISD::STORE){
+       LLVM_DEBUG(dbgs() << "Node store value: "; LSNode2->dump(); dbgs() << "\n");
+       int64_t Size =
+           (MemVT == MVT::i64 || MemVT == MVT::f64) ? 8 :
+           (MemVT == MVT::i32 || MemVT == MVT::f32) ? 4 :
+           (MemVT == MVT::i16)                      ? 2 :
+           (MemVT == MVT::i8)                       ? 1 :
+                                                     0;
+
+       if(Size == 0){
+         continue;
+       }
+
+       int64_t Start1 = Offset1;
+       int64_t End1   = Offset1 + Size;
+       int64_t Start2 = Offset2;
+       int64_t End2   = Offset2 + Size;
+
+       // Check for any overlap in memory regions
+       bool Overlap = (Start1 < End2) && (Start2 < End1);
+       if (Overlap) {
+         // Skip fusion: memory ranges overlap
+         continue;
+       }
+
+     // Skip already fused instructions.
+     if (FusedNodes.lookup(LSNode2))
+       continue;
+
+     if (isPartOfLargeStoreGroup(LSNode1, DAG)) {
+       // Don't try to pack this store
+     continue;
+     }
+
+     if (UsedStoreNodes.count(LSNode2) || UsedStoreNodes.count(LSNode1))
+       continue; // Already used in a pair
+
+    // Found a matching node. Mark both as fused.
+       FusedNodes[LSNode1] = true;
+       FusedNodes[LSNode2] = true;
+    // Then mark them as used
+       UsedStoreNodes.insert(LSNode2);
+       UsedStoreNodes.insert(LSNode1);  
+     }else{
+       LLVM_DEBUG(dbgs() << "Node store value: "; LSNode2->dump(); dbgs() << "\n");
+
+       int64_t Size =
+           (MemVT == MVT::i64 || MemVT == MVT::f64) ? 16 :
+           (MemVT == MVT::i32 || MemVT == MVT::f32) ? 8 :
+           (MemVT == MVT::i16)                      ? 4 :
+           (MemVT == MVT::i8)                       ? 2 :
+                                                     0;
+
+       if(Size == 0){
+         continue;
+       }
+
+     // Skip already fused instructions.
+     if (FusedNodes.lookup(LSNode2))
+       continue;
+
+     if (UsedStoreNodes.count(LSNode2) || UsedStoreNodes.count(LSNode1))
+       continue; // Already used in a pair
+
+             // Found a matching node. Mark both as fused.
+       FusedNodes[LSNode1] = true;
+       FusedNodes[LSNode2] = true;
+           // Then mark them as used
+       UsedStoreNodes.insert(LSNode2);
+       UsedStoreNodes.insert(LSNode1);
+     }
+      LLVM_DEBUG(dbgs() << "Node store1 value: "; LSNode2->dump(); dbgs() << "\n");
       if (SDValue Res =
               tryFusionMemPairCombine(DAG, LSNode1, LSNode2, Base1, Offset1, Offset2)){
         LLVM_DEBUG(dbgs() << "LSNode111: "; LSNode1->dump(); dbgs() << "\n");
@@ -18789,6 +19146,11 @@ const char *RISCVTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(TH_SWD)
   NODE_NAME_CASE(TH_SDD)
   NODE_NAME_CASE(FU_LWD)
+  NODE_NAME_CASE(FU_LWUD)
+  NODE_NAME_CASE(FU_LHD)
+  NODE_NAME_CASE(FU_LHUD)
+  NODE_NAME_CASE(FU_LBD)
+  NODE_NAME_CASE(FU_LBUD)
   NODE_NAME_CASE(FU_LDD)
   NODE_NAME_CASE(FU_FLD)
   NODE_NAME_CASE(FU_FSD)
@@ -18796,6 +19158,8 @@ const char *RISCVTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(FU_FSW)
   NODE_NAME_CASE(FU_SWD)
   NODE_NAME_CASE(FU_SDD)
+  NODE_NAME_CASE(FU_SHD)
+  NODE_NAME_CASE(FU_SBD)
   NODE_NAME_CASE(VMV_V_V_VL)
   NODE_NAME_CASE(VMV_V_X_VL)
   NODE_NAME_CASE(VFMV_V_F_VL)

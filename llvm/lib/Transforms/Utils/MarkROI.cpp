@@ -32,10 +32,20 @@ static cl::opt<std::string> FunctionName(
 //625.x264 x264_encoder_encode encoder
 PreservedAnalyses MarkROIPass::run(Function &F,
                                       FunctionAnalysisManager &AM) {
-        // if (F.getName() != "_ZNK11xalanc_1_1013ElemWithParam12startElementERNS_26StylesheetExecutionContextE") {
+        // std::string function_name = FunctionName;
+        // if (function_name.empty())
+        // {
+        //     errs() << "Function name not provided\n";
+        //     assert(false && "Function name not provided");
+        //     return PreservedAnalyses::all();
+        // }
+        // // // Print the function name
+        // errs() << "Function Name: " << F.getName() << "\n";
+        // errs() << "Function Name Input: " << function_name << "\n";
+        // if (F.getName() != function_name) {
         //     return PreservedAnalyses::all(); // Skip other functions
         // }
-
+        // bool inserted = false;
         // LLVMContext &Context = F.getContext();
         // IRBuilder<> Builder(Context);
 
@@ -50,21 +60,7 @@ PreservedAnalyses MarkROIPass::run(Function &F,
         // InlineAsm *StartInlineAsm = InlineAsm::get(VoidTy, StartAsm, "", true);
         // Builder.CreateCall(StartInlineAsm);
 
-        // // Create a unified exit block
-        // BasicBlock *ExitBlock = BasicBlock::Create(Context, "exit_bb", &F);
-        // Builder.SetInsertPoint(ExitBlock);
-        // InlineAsm *EndInlineAsm = InlineAsm::get(VoidTy, EndAsm, "", true);
-        // Builder.CreateCall(EndInlineAsm);
-
-        // // Placeholder return type (assumes function returns i32, modify accordingly)
-        // Type *RetType = F.getReturnType();
-        // if (RetType->isVoidTy()) {
-        //     Builder.CreateRetVoid();
-        // } else {
-        //     Builder.CreateRet(Constant::getNullValue(RetType)); // Adjust this as needed
-        // }
-
-        // // Redirect all return instructions to the new exit block
+        // // Collect all return instructions
         // std::vector<ReturnInst *> ReturnInsts;
         // for (BasicBlock &BB : F) {
         //     for (Instruction &I : BB) {
@@ -73,11 +69,47 @@ PreservedAnalyses MarkROIPass::run(Function &F,
         //         }
         //     }
         // }
+        // // Create the unified exit block
+        // BasicBlock *ExitBlock = BasicBlock::Create(Context, "exit_bb", &F);
 
+        // Type *RetType = F.getReturnType();
+        // PHINode *RetValPHI = nullptr;
+
+        // // Insert PHI node at the top (if needed)
+        // if (!RetType->isVoidTy()) {
+        //     IRBuilder<> PHIBuilder(ExitBlock);
+        //     RetValPHI = PHIBuilder.CreatePHI(RetType, ReturnInsts.size(), "retval_phi");
+        // }
+
+        // // Insert the end inline assembly and return instruction
+        // IRBuilder<> ExitBuilder(ExitBlock);
+        // ExitBuilder.SetInsertPoint(ExitBlock, ExitBlock->getFirstInsertionPt());
+
+        // InlineAsm *EndInlineAsm = InlineAsm::get(VoidTy, EndAsm, "", true);
+        // ExitBuilder.CreateCall(EndInlineAsm);
+
+        // if (!RetType->isVoidTy()) {
+        //     ExitBuilder.CreateRet(RetValPHI);
+        // } else {
+        //     ExitBuilder.CreateRetVoid();
+        // }
+
+        // // Replace each return with a branch to the exit block
         // for (ReturnInst *RI : ReturnInsts) {
         //     IRBuilder<> RetBuilder(RI);
-        //     RetBuilder.CreateBr(ExitBlock); // Replace return with a branch to exit block
-        //     RI->eraseFromParent();          // Remove old return instruction
+        //     if (!RetType->isVoidTy()) {
+        //         RetValPHI->addIncoming(RI->getReturnValue(), RI->getParent());
+        //     }
+        //     RetBuilder.CreateBr(ExitBlock);
+        //     RI->eraseFromParent();
+        //     inserted = true;
+        // }
+
+        //         // Fallback: no return found? Insert at end of entry block
+        // if (!inserted) {
+        //     BasicBlock &Entry = F.getEntryBlock();
+        //     IRBuilder<> Builder(&*Entry.getFirstInsertionPt());
+        //     Builder.CreateCall(EndInlineAsm);
         // }
         //623.xalancbmk _ZNK11xalanc_1_1013ElemWithParam12startElementERNS_26StylesheetExecutionContextE
         //631.deepjeng _Z11search_rootP7state_tiii
@@ -89,6 +121,7 @@ PreservedAnalyses MarkROIPass::run(Function &F,
         //619.lbm LBM_performStreamCollideTRT
         //620.omnetpp _ZN8EtherMAC22startFrameTransmissionEv
         //623.xalancbmk main //_ZN11xalanc_1_1027XalanReferenceCountedObject15removeReferenceEPS0_
+        //From  here the code begins
         std::string function_name = FunctionName;
         if (function_name.empty())
         {
@@ -120,12 +153,15 @@ PreservedAnalyses MarkROIPass::run(Function &F,
         // Insert "srai zero, zero, 1" before every return instruction
         for (BasicBlock &BB : F) {
             for (Instruction &I : BB) {
-                if (isa<ReturnInst>(&I)) {
+                //I want to insert inline assembly at the end of the function, some of the functions might not have a return instruction
+                //Can't we use iterators to find the end of the function?
+                if (isa<ReturnInst>(&I) || isa<UnreachableInst>(&I)) {
                     Builder.SetInsertPoint(&I);
                     InlineAsm *EndInlineAsm = InlineAsm::get(VoidTy, EndAsm, "", true);
                     Builder.CreateCall(EndInlineAsm);
                 }
             }
         }
+        // Insert "srai zero, zero, 1" at the end of the function
   return PreservedAnalyses::all();
 }

@@ -303,7 +303,6 @@ public:
   /// This also adds target-specific alias analyses registered via
   /// TargetMachine::registerDefaultAliasAnalyses().
   AAManager buildCapsUMUPipeline();
-
   /// Parse a textual pass pipeline description into a \c
   /// ModulePassManager.
   ///

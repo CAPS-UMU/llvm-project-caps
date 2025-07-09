@@ -37,6 +37,7 @@ add_llvm_component_library(LLVMTransformUtils
   PAAMWorld.cpp
   MarkROI.cpp
   Reorder.cpp
+  ReorderSpeculative.cpp
   Reorderstore.cpp
   UnrollInnerMostLoop.cpp
   InlineFunction.cpp
