@@ -13641,33 +13641,33 @@ MachineMemOperand *NewMMO = MF.getMachineMemOperand(
     EVT evt = LSNode1->getSimpleValueType(0);
     unsigned Opcode;
       if (MemVT == MVT::f32){
-        return SDValue(); //comment this to fuse loads
+        //return SDValue(); //comment this to fuse loads
       LLVM_DEBUG(dbgs() << "Using FU_FLW for floating point load\n");
       Opcode = RISCVISD::FU_FLW;
       } else if(MemVT == MVT::f64){
-        return SDValue(); //comment this to fuse loads
+        //return SDValue(); //comment this to fuse loads
       LLVM_DEBUG(dbgs() << "Using FU_FLD for floating point load\n");
       Opcode = RISCVISD::FU_FLD;
       }else if (MemVT == MVT::i32){
-        return SDValue(); //comment this to fuse loads
+        //return SDValue(); //comment this to fuse loads
         Opcode = (Ext == ISD::ZEXTLOAD) ? RISCVISD::FU_LWUD : RISCVISD::FU_LWD;
         LLVM_DEBUG(dbgs() << "Using FU_LWUD/FU_LWD for integer load\n");
         //return SDValue(); //comment this to fuse loads
         //LLVM_DEBUG(dbgs() << "Using FU_LWD for integer load\n");
         // Opcode = RISCVISD::FU_LWD;
       } else if (MemVT == MVT::i64){
-        return SDValue(); //comment this to fuse loads
+        //return SDValue(); //comment this to fuse loads
         //LLVM_DEBUG(dbgs() << "Using FU_LDD for integer load\n");
         LLVM_DEBUG(dbgs() << "Using FU_LDD for floating point load\n");
         Opcode = RISCVISD::FU_LDD;
       } else if(MemVT == MVT::i16){
-        return SDValue(); //comment this to fuse loads
+        //return SDValue(); //comment this to fuse loads
         //LLVM_DEBUG(dbgs() << "Using FU_LHD for integer load\n");
         LLVM_DEBUG(dbgs() << "Using FU_LHUD/LHD for floating point load\n");
         Opcode = (Ext == ISD::ZEXTLOAD) ? RISCVISD::FU_LHUD : RISCVISD::FU_LHD;
         // Opcode = RISCVISD::FU_LHD;
       } else if(MemVT == MVT::i8){
-        return SDValue(); //comment this to fuse loads
+        //return SDValue(); //comment this to fuse loads
         //LLVM_DEBUG(dbgs() << "Using FU_LBD for integer load\n");
         LLVM_DEBUG(dbgs() << "Using FU_LBUD/LBD for floating point load\n");
         Opcode = (Ext == ISD::ZEXTLOAD) ? RISCVISD::FU_LBUD : RISCVISD::FU_LBD;
@@ -13781,15 +13781,15 @@ LLVM_DEBUG(dbgs() << "XLenVT type: " << XLenVT << "\n");
      EVT evt = LSNode1->getMemoryVT();
 
       if (MemVT == MVT::f32){
-        return SDValue(); //comment this to fuse stores
+        //return SDValue(); //comment this to fuse stores
       LLVM_DEBUG(dbgs() << "Using FU_FSW for floating point store\n");
       Opcode = RISCVISD::FU_FSW;
       } else if(MemVT == MVT::f64){
-        return SDValue(); //comment this to fuse stores
+        //return SDValue(); //comment this to fuse stores
       LLVM_DEBUG(dbgs() << "Using FU_FSD for floating point store\n");
       Opcode = RISCVISD::FU_FSD;
       }else if (MemVT == MVT::i32){
-      return SDValue(); //comment this to fuse stores
+      //return SDValue(); //comment this to fuse stores
       LLVM_DEBUG(dbgs() << "Using FU_SWD for integer store\n");
       Opcode = RISCVISD::FU_SWD;
       } else if (MemVT == MVT::i64){
@@ -13797,7 +13797,7 @@ LLVM_DEBUG(dbgs() << "XLenVT type: " << XLenVT << "\n");
       LLVM_DEBUG(dbgs() << "Using FU_SDD for integer store\n");
       Opcode = RISCVISD::FU_SDD;
       } else if(MemVT == MVT::i16){
-      return SDValue(); //comment this to fuse stores
+      //return SDValue(); //comment this to fuse stores
       LLVM_DEBUG(dbgs() << "Using FU_SHD for integer store\n");
       Opcode = RISCVISD::FU_SHD;
       } else if(MemVT == MVT::i8){
@@ -14072,59 +14072,114 @@ static int Lastoffset2 = 0;
       if (!Valid)
         continue;
 
-      if(LSNode2->getOpcode() == ISD::STORE){
+      if(LSNode2->getOpcode() == ISD::STORE && MemVT == MVT::i64 && bool(false)){
         LLVM_DEBUG(dbgs() << "Node store value: "; LSNode2->dump(); dbgs() << "\n");
         int64_t Size = 16; // For sd (sd)
-
         int64_t Start1 = Offset1;
         int64_t End1   = Offset1 + Size;
+       int64_t Start2 = Offset2;
+       int64_t End2   = Offset2 + Size;
+       // Check for any overlap in memory regions
+       bool Overlap = (Start1 < End2) && (Start2 < End1);
+       if (Overlap) {
+         // Skip fusion: memory ranges overlap
+         return SDValue();
+       }
 
-        int64_t Start2 = Offset2;
-        int64_t End2   = Offset2 + Size;
-      // Check for any overlap in memory regions
-      bool Overlap = (Start1 < End2) && (Start2 < End1);
-      if (Overlap) {
-        // Skip fusion: memory ranges overlap
-        return SDValue();
-      }
-      if (Offset2 < Offset1) {
-        std::swap(LSNode1, LSNode2);
-        std::swap(Offset1, Offset2);
-      }
+       if (Offset2 < Offset1) {
+         std::swap(LSNode1, LSNode2);
+         std::swap(Offset1, Offset2);
+       }
+     // Skip already fused instructions.
+     if (FusedNodes.lookup(LSNode2))
+       continue;
 
-        if (isPartOfLargeStoreGroup(LSNode1, DAG)) {
-          // Don't try to pack this store
-        continue;
-        }
-      if (abs(LSNode1->getNodeId() - LSNode2->getNodeId()) != 1)
-        continue;
-      // Maintain order: only pair with instructions that come after LSNode1.
-      if (LSNode2 < LSNode1)
-        continue;
-        // Skip already fused instructions.
-        if (FusedNodes.lookup(LSNode2))
-          continue;
-        auto Store1 = dyn_cast<StoreSDNode>(LSNode1);
-        auto Store2 = dyn_cast<StoreSDNode>(LSNode2);
-        auto Val1 = Store1->getValue(); // stored value
-        auto Val2 = Store2->getValue();
-        SDValue StoredVal1 = LSNode1->getOperand(1);
-        SDValue StoredVal2 = LSNode2->getOperand(1);
-        if (Store1->getValue() == Store2->getValue())
-          continue;
-        if (UsedStoreNodes.count(LSNode2) || UsedStoreNodes.count(LSNode1) || UsedStoreValues.count(Val1) || UsedStoreValues.count(Val2) || UsedStoreVals.count(StoredVal1) || UsedStoreVals.count(StoredVal2))
-          continue; // Already used in a pair
-        // Found a matching node. Mark both as fused.
-        FusedNodes[LSNode1] = true;
-        FusedNodes[LSNode2] = true;
-            // Then mark them as used
-        UsedStoreNodes.insert(LSNode2);
-        UsedStoreNodes.insert(LSNode1);
-        UsedStoreValues.insert(Val1);
-        UsedStoreValues.insert(Val2);
-        UsedStoreVals.insert(StoredVal1);
-        UsedStoreVals.insert(StoredVal2);
-      }
+     if (UsedStoreNodes.count(LSNode2) || UsedStoreNodes.count(LSNode1))
+       continue; // Already used in a pair
+
+      // Found a matching node. Mark both as fused.
+      FusedNodes[LSNode1] = true;
+      FusedNodes[LSNode2] = true;
+      // Then mark them as used
+      UsedStoreNodes.insert(LSNode2);
+      UsedStoreNodes.insert(LSNode1);
+
+       if (isPartOfLargeStoreGroup(LSNode1, DAG)) {
+         // Don't try to pack this store
+       continue;
+       }     
+
+     }else if(LSNode2->getOpcode() == ISD::STORE){
+       LLVM_DEBUG(dbgs() << "Node store value: "; LSNode2->dump(); dbgs() << "\n");
+       int64_t Size =
+           (MemVT == MVT::i64 || MemVT == MVT::f64) ? 8 :
+           (MemVT == MVT::i32 || MemVT == MVT::f32) ? 4 :
+           (MemVT == MVT::i16)                      ? 2 :
+           (MemVT == MVT::i8)                       ? 1 :
+                                                     0;
+
+       if(Size == 0){
+         continue;
+       }
+
+       int64_t Start1 = Offset1;
+       int64_t End1   = Offset1 + Size;
+       int64_t Start2 = Offset2;
+       int64_t End2   = Offset2 + Size;
+
+       // Check for any overlap in memory regions
+       bool Overlap = (Start1 < End2) && (Start2 < End1);
+       if (Overlap) {
+         // Skip fusion: memory ranges overlap
+         continue;
+       }
+
+     // Skip already fused instructions.
+     if (FusedNodes.lookup(LSNode2))
+       continue;
+
+     if (isPartOfLargeStoreGroup(LSNode1, DAG)) {
+       // Don't try to pack this store
+     continue;
+     }
+
+     if (UsedStoreNodes.count(LSNode2) || UsedStoreNodes.count(LSNode1))
+       continue; // Already used in a pair
+
+    // Found a matching node. Mark both as fused.
+       FusedNodes[LSNode1] = true;
+       FusedNodes[LSNode2] = true;
+    // Then mark them as used
+       UsedStoreNodes.insert(LSNode2);
+       UsedStoreNodes.insert(LSNode1);  
+     }else{
+       LLVM_DEBUG(dbgs() << "Node store value: "; LSNode2->dump(); dbgs() << "\n");
+
+       int64_t Size =
+           (MemVT == MVT::i64 || MemVT == MVT::f64) ? 16 :
+           (MemVT == MVT::i32 || MemVT == MVT::f32) ? 8 :
+           (MemVT == MVT::i16)                      ? 4 :
+           (MemVT == MVT::i8)                       ? 2 :
+                                                     0;
+
+       if(Size == 0){
+         continue;
+       }
+
+     // Skip already fused instructions.
+     if (FusedNodes.lookup(LSNode2))
+       continue;
+
+     if (UsedStoreNodes.count(LSNode2) || UsedStoreNodes.count(LSNode1))
+       continue; // Already used in a pair
+
+             // Found a matching node. Mark both as fused.
+       FusedNodes[LSNode1] = true;
+       FusedNodes[LSNode2] = true;
+           // Then mark them as used
+       UsedStoreNodes.insert(LSNode2);
+       UsedStoreNodes.insert(LSNode1);
+     }
       LLVM_DEBUG(dbgs() << "Node store1 value: "; LSNode2->dump(); dbgs() << "\n");
       if (SDValue Res =
               tryFusionMemPairCombine(DAG, LSNode1, LSNode2, Base1, Offset1, Offset2)){

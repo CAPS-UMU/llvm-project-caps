@@ -26,20 +26,19 @@ def SDT_FLoadFusionPair : SDTypeProfile<2, 3, [
                                         SDTCisVT<3, XLenVT>,
                                         SDTCisVT<4, XLenVT>]>;
 
-def SDT_StoreFusionPair : SDTypeProfile<0, 5, [SDTCisInt<0>,
-                                         SDTCisSameAs<0, 1>,
+def SDT_StoreFusionPair : SDTypeProfile<0, 5, [SDTCisSameAs<0, 1>,
+                                         SDTCisSameAs<1, 3>,
                                          SDTCisPtrTy<2>,
                                          SDTCisVT<3, XLenVT>,
                                          SDTCisVT<4, XLenVT>]>;
 
 def SDT_FStoreFusionPair : SDTypeProfile<0, 5, [
-                                         SDTCisFP<0>,              // val1 is FP
-                                         SDTCisSameAs<0, 1>,       // val1 == val2 (same FP type)
+                                         SDTCisFP<1>,
+                                         SDTCisFP<0>,
                                          SDTCisPtrTy<2>,
                                          SDTCisVT<3, XLenVT>,
                                          SDTCisVT<4, XLenVT>]>;
-
-
+                                         
 def fu_lwd : SDNode<"RISCVISD::FU_LWD", SDT_LoadFusionPair,
                     [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
 def fu_ldd : SDNode<"RISCVISD::FU_LDD", SDT_LoadFusionPair,
@@ -86,7 +85,7 @@ def simm12fu : RISCVSImmLeafOp<12> {
 def loadf128 : PatFrag<(ops node:$ptr), (f128 (load node:$ptr))>;
 
 let Predicates = [IsRV64, HasStdExtF, HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0,  
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8,  
      isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUFLW : Pseudo<(outs FPR32:$rd, FPR32:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.flw", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteFLD32, WriteFLD32, ReadFMemBase]>{
@@ -97,7 +96,7 @@ def PseudoFUFLW : Pseudo<(outs FPR32:$rd, FPR32:$rd2), (ins GPRMem:$rs1, simm12:
 }
 
 let Predicates = [IsRV64, HasStdExtD, HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0,  
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8,  
      isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUFLD : Pseudo<(outs FPR64:$rd, FPR64:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.fld", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteFLD64, WriteFLD64, ReadFMemBase]>{
@@ -108,7 +107,7 @@ def PseudoFUFLD : Pseudo<(outs FPR64:$rd, FPR64:$rd2), (ins GPRMem:$rs1, simm12:
 }
 
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0,  
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8,  
      isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFULW : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.lw", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteLDW, WriteLDW, ReadMemBase]>{
@@ -119,7 +118,7 @@ def PseudoFULW : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm1
 }
 
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0,  
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8,  
      isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFULWU : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.lwud", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteLDW, WriteLDW, ReadMemBase]>{
@@ -131,7 +130,7 @@ def PseudoFULWU : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm
 
 //same for lb
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0,  
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8,  
      isPseudo = 1,isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFULB : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.lb", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteLDB, WriteLDB, ReadMemBase]>{
@@ -143,7 +142,7 @@ def PseudoFULB : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm1
 
 //same for lbu
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0,  
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8,  
      isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFULBU : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.lbud", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteLDB, WriteLDB, ReadMemBase]>{
@@ -154,7 +153,7 @@ def PseudoFULBU : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm
 }
 //same for lh
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0, 
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8, 
      isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFULH : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.lh", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteLDH, WriteLDH, ReadMemBase]>{
@@ -165,7 +164,7 @@ def PseudoFULH : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm1
 }
 //same for lhu
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0, 
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8, 
      isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFULHU : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.lhud", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteLDH, WriteLDH, ReadMemBase]>{
@@ -176,7 +175,7 @@ def PseudoFULHU : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm
 }
 
 let Predicates = [HasVendorFusionMemPair, IsRV64] in {
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0,  
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Size = 8,  
     isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFULD : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.ld", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteLDD, WriteLDD, ReadMemBase]>{
@@ -191,8 +190,8 @@ def PseudoFULD : Pseudo<(outs GPR:$rd, GPR:$rd2), (ins GPRMem:$rs1, simm12:$imm1
 //===----------------------------------------------------------------------===//
 
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 0, mayStore = 1,  
-     isReMaterializable = 0, isAsmParserOnly = 0 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 1, Size = 8,  
+     isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUSW : Pseudo<(outs), (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.sw", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteSTW, WriteSTW, ReadStoreData, ReadMemBase]>{
                         let OutOperandList = (outs);
@@ -201,8 +200,8 @@ def PseudoFUSW : Pseudo<(outs), (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm
 }
 
 let Predicates = [HasVendorFusionMemPair, IsRV64] in {
-let hasSideEffects = 0, mayLoad = 0, mayStore = 1,  
-     isReMaterializable = 0, isAsmParserOnly = 0 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 1, Size = 8,  
+    isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUSD : Pseudo<(outs), (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.sd", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteSTD, WriteSTD, ReadStoreData, ReadMemBase]>{
                         let OutOperandList = (outs);
@@ -210,8 +209,8 @@ def PseudoFUSD : Pseudo<(outs), (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm
                        }
 }
 let Predicates = [HasVendorFusionMemPair, IsRV64] in {
-let hasSideEffects = 0, mayLoad = 0, mayStore = 1,  
-     isReMaterializable = 0, isAsmParserOnly = 0 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 1, Size = 8,  
+    isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUSDC : Pseudo<
   (outs),
   (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
@@ -225,8 +224,8 @@ def PseudoFUSDC : Pseudo<
 }
 //same for sh
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 0, mayStore = 1, 
-     isReMaterializable = 0, isAsmParserOnly = 0 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 1, Size = 8, 
+    isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUSH : Pseudo<(outs), (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.sh", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteSTH, WriteSTH, ReadStoreData, ReadMemBase]>{
                         let OutOperandList = (outs);
@@ -235,8 +234,8 @@ def PseudoFUSH : Pseudo<(outs), (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm
 }
 //same for sb
 let Predicates = [HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 0, mayStore = 1,  
-     isReMaterializable = 0, isAsmParserOnly = 0 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 1, Size = 8,  
+    isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUSB : Pseudo<(outs), (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.sb", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteSTB, WriteSTB, ReadStoreData, ReadMemBase]>{
                         let OutOperandList = (outs);
@@ -245,8 +244,8 @@ def PseudoFUSB : Pseudo<(outs), (ins GPR:$rd, GPR:$rd2, GPRMem:$rs1, simm12:$imm
 }
 
 let Predicates = [IsRV64, HasStdExtF, HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 0, mayStore = 1,  
-     isReMaterializable = 0, isAsmParserOnly = 0 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 1, Size = 8,  
+    isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUFSW : Pseudo<(outs), (ins FPR32:$rd, FPR32:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.fsw", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteFST32, WriteFST32, ReadFStoreData, ReadFMemBase]>{
                         let OutOperandList = (outs);
@@ -255,8 +254,8 @@ def PseudoFUFSW : Pseudo<(outs), (ins FPR32:$rd, FPR32:$rd2, GPRMem:$rs1, simm12
 }
 
 let Predicates = [IsRV64, HasStdExtD, HasVendorFusionMemPair] in {
-let hasSideEffects = 0, mayLoad = 0, mayStore = 1,  
-     isReMaterializable = 0, isAsmParserOnly = 0 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 1, Size = 8,
+    isPseudo = 1, isReMaterializable = 0, isAsmParserOnly = 0 in
 def PseudoFUFSD : Pseudo<(outs), (ins FPR64:$rd, FPR64:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122), [],
                        "fu.fsd", "$rd, $rd2, (${rs1}), $imm12, $imm122">, Sched<[WriteFST64, WriteFST64, ReadFStoreData, ReadFMemBase]>{
                         let OutOperandList = (outs);
@@ -277,15 +276,15 @@ let Predicates = [HasVendorFusionMemPair, IsRV64] in {
 let Predicates = [HasVendorFusionMemPair, IsRV64] in {
 //   def : Pat<(fu_swd GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
 //             (PseudoFUSW GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122)>;
-  def : Pat<(fu_swd (i32 GPR:$rd1), (i32 GPR:$rd2), GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
+  def : Pat<(fu_swd GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
             (PseudoFUSW GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122)>;
-  def : Pat<(fu_sdd (i64 GPR:$rd1), (i64 GPR:$rd2), GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
+  def : Pat<(fu_sdd GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
             (PseudoFUSD GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122)>;
-  def : Pat<(fu_sdc (i64 GPR:$rd1), (i64 GPR:$rd2), GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
+  def : Pat<(fu_sdc GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
             (PseudoFUSDC GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122)>;            
-  def : Pat<(fu_shd (i32 GPR:$rd1), (i32 GPR:$rd2), GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
+  def : Pat<(fu_shd GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
             (PseudoFUSH GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122)>;
-  def : Pat<(fu_sbd (i32 GPR:$rd1), (i32 GPR:$rd2), GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
+  def : Pat<(fu_sbd GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122),
             (PseudoFUSB GPR:$rd1, GPR:$rd2, GPRMem:$rs1, simm12:$imm12, simm12:$imm122)>;
 }
 

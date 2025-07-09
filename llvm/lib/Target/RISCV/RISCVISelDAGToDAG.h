@@ -42,7 +42,6 @@ public:
   void PostprocessISelDAG() override;
 
   void Select(SDNode *Node) override;
-  bool tryCombineStores(SDNode *Node);
 
   bool SelectInlineAsmMemoryOperand(const SDValue &Op,
                                     InlineAsm::ConstraintCode ConstraintID,

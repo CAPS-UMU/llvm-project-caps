@@ -313,7 +313,7 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                           errs() << "Across call reordering enabled" << "\n";
                           ModRefInfo CallAR = AA.getModRefInfo(callInst, MemoryLocation::get(loadInst));
 
-                          if(callInst->mayHaveSideEffects() || !callInst->onlyReadsMemory() || CallAR == ModRefInfo::ModRef || CallAR == ModRefInfo::Ref || CallAR == ModRefInfo::Mod) { //Keep both mod and ref
+                          if(callInst->mayHaveSideEffects() || CallAR == ModRefInfo::ModRef || CallAR == ModRefInfo::Ref) { //Keep both mod and ref
                             if(callInst->mayHaveSideEffects()){
                               errs() << "Call may have side effects" << "\n";
                             }else {
