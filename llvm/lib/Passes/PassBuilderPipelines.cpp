@@ -16,11 +16,13 @@
 
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/AliasGraph.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/InlineAdvisor.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
+#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
 #include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
@@ -2129,10 +2131,12 @@ AAManager PassBuilder::buildCapsUMUPipeline() {
   // information about aliasing.
   AA.registerFunctionAnalysis<ScopedNoAliasAA>();
   AA.registerFunctionAnalysis<TypeBasedAA>();
-
-  // registering some global analysis
-  // AA.registerModuleAnalysis<GlobalsAA>();
-
+  
+  // global alias analysis to request
+  if (EnableGlobalAnalyses) {
+    AA.registerModuleAnalysis<GlobalsAA>();
+    AA.registerModuleAnalysis<GraphAA>();
+  }
 
   // Add target-specific alias analyses.
   if (TM)

@@ -45,6 +45,8 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "scopednoalias-aa"
+
 // A handy option for disabling scoped no-alias functionality. The same effect
 // can also be achieved by stripping the associated metadata tags from IR, but
 // this option is sometimes more convenient.
@@ -55,6 +57,12 @@ AliasResult ScopedNoAliasAAResult::alias(const MemoryLocation &LocA,
                                          const MemoryLocation &LocB,
                                          AAQueryInfo &AAQI,
                                          const Instruction *) {
+  LLVM_DEBUG(dbgs() << "Executing ScopedNoAliasAAResult::" << __func__ << "\n"
+                    << "On memory location : \n");
+  LLVM_DEBUG(LocA.print(dbgs()));
+  LLVM_DEBUG(LocB.print(dbgs()));
+  LLVM_DEBUG(dbgs() << "\n");
+
   if (!EnableScopedNoAlias)
     return AliasResult::MayAlias;
 

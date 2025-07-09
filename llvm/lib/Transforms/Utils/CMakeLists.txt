@@ -1,5 +1,7 @@
 add_llvm_component_library(LLVMTransformUtils
   AddDiscriminators.cpp
+  AliasGraphBuilder.cpp
+  AliasTestPass.cpp 
   AMDGPUEmitPrintf.cpp
   ASanStackFrameLayout.cpp
   AssumeBundleBuilder.cpp
@@ -31,6 +33,7 @@ add_llvm_component_library(LLVMTransformUtils
   GlobalStatus.cpp
   GuardUtils.cpp
   HelloWorld.cpp
+  AliasTestPass.cpp
   PAAMWorld.cpp
   MarkROI.cpp
   Reorder.cpp

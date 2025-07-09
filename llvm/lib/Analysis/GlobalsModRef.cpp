@@ -813,6 +813,12 @@ bool GlobalsAAResult::invalidate(Module &, const PreservedAnalyses &PA,
 AliasResult GlobalsAAResult::alias(const MemoryLocation &LocA,
                                    const MemoryLocation &LocB,
                                    AAQueryInfo &AAQI, const Instruction *) {
+  LLVM_DEBUG(dbgs() << "Executing GlobalsAAResults::" << __func__ << "\n"
+                    << "On memory location : \n");
+  LLVM_DEBUG(LocA.print(dbgs()));
+  LLVM_DEBUG(LocB.print(dbgs()));
+  LLVM_DEBUG(dbgs() << "\n");
+
   // Get the base object these pointers point to.
   const Value *UV1 =
       getUnderlyingObject(LocA.Ptr->stripPointerCastsForAliasAnalysis());

@@ -24,6 +24,8 @@
 #include "llvm/InitializePasses.h"
 using namespace llvm;
 
+#define DEBUG_TYPE "scev-aa"
+
 static bool canComputePointerDiff(ScalarEvolution &SE,
                                   const SCEV *A, const SCEV *B) {
   if (SE.getEffectiveSCEVType(A->getType()) !=
@@ -36,6 +38,12 @@ static bool canComputePointerDiff(ScalarEvolution &SE,
 AliasResult SCEVAAResult::alias(const MemoryLocation &LocA,
                                 const MemoryLocation &LocB, AAQueryInfo &AAQI,
                                 const Instruction *) {
+  LLVM_DEBUG(dbgs() << "Executing SCEVAAResults::" << __func__ << "\n"
+                    << "On memory location : \n");
+  LLVM_DEBUG(LocA.print(dbgs()));
+  LLVM_DEBUG(LocB.print(dbgs()));
+  LLVM_DEBUG(dbgs() << "\n");
+
   // If either of the memory references is empty, it doesn't matter what the
   // pointer values are. This allows the code below to ignore this special
   // case.
