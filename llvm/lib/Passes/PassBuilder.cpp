@@ -259,6 +259,7 @@
 #include "llvm/Transforms/Utils/PAAMWorld.h"
 #include "llvm/Transforms/Utils/MarkROI.h"
 #include "llvm/Transforms/Utils/Reorder.h"
+#include "llvm/Transforms/Utils/ReorderSpeculative.h"
 #include "llvm/Transforms/Utils/Reorderstore.h"
 #include "llvm/Transforms/Utils/UnrollInnerMostLoop.h"
 #include "llvm/Transforms/Utils/InjectTLIMappings.h"
@@ -2064,12 +2065,12 @@ Error PassBuilder::parseAAPipeline(AAManager &AA, StringRef PipelineText) {
   if (PipelineText == "default") {
     AA = buildDefaultAAPipeline();
     return Error::success();
-  } 
-  
+ } 
+
   if (PipelineText == "caps-umu") {
     AA = buildCapsUMUPipeline();
     return Error::success();
-  }
+ }
 
   while (!PipelineText.empty()) {
     StringRef Name;

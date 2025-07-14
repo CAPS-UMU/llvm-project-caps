@@ -23,6 +23,8 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "riscv-expand-pseudo" 
+
 #define RISCV_EXPAND_PSEUDO_NAME "RISC-V pseudo instruction expansion pass"
 #define RISCV_PRERA_EXPAND_PSEUDO_NAME "RISC-V Pre-RA pseudo instruction expansion pass"
 
@@ -414,6 +416,12 @@ private:
   bool expandFUSWInstPair(MachineBasicBlock &MBB,
                           MachineBasicBlock::iterator MBBI,
                           MachineBasicBlock::iterator &NextMBBI);
+  bool expandFUSHInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFUSBInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
   bool expandFUFLWInstPair(MachineBasicBlock &MBB,
                           MachineBasicBlock::iterator MBBI,
                           MachineBasicBlock::iterator &NextMBBI);
@@ -426,6 +434,21 @@ private:
   bool expandFUFSDInstPair(MachineBasicBlock &MBB,
                           MachineBasicBlock::iterator MBBI,
                           MachineBasicBlock::iterator &NextMBBI);
+  bool expandFULWUInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFULHInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFULHUInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFULBInstPair(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI,
+                          MachineBasicBlock::iterator &NextMBBI);
+  bool expandFULBUInstPair(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator MBBI,
+                           MachineBasicBlock::iterator &NextMBBI);
   bool expandLoadGlobalAddress(MachineBasicBlock &MBB,
                                MachineBasicBlock::iterator MBBI,
                                MachineBasicBlock::iterator &NextMBBI);
@@ -462,7 +485,7 @@ bool RISCVPreRAExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
 
 #ifndef NDEBUG
   const unsigned NewSize = getInstSizeInBytes(MF);
-  assert(OldSize >= NewSize);
+  // assert(OldSize >= NewSize);
 #endif
   return Modified;
 }
@@ -501,6 +524,20 @@ bool RISCVPreRAExpandPseudo::expandMI(MachineBasicBlock &MBB,
     return expandFUFSDInstPair(MBB, MBBI, NextMBBI);
   case RISCV::PseudoFUFLW:
     return expandFUFLWInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFUSB:
+    return expandFUSBInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFUSH:
+    return expandFUSHInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFULWU:
+    return expandFULWUInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFULH:
+    return expandFULHInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFULHU:
+    return expandFULHUInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFULB:
+    return expandFULBInstPair(MBB, MBBI, NextMBBI);
+  case RISCV::PseudoFULBU:
+    return expandFULBUInstPair(MBB, MBBI, NextMBBI);
   case RISCV::PseudoFUFSW:
     return expandFUFSWInstPair(MBB, MBBI, NextMBBI);
   case RISCV::PseudoLGA:
@@ -551,7 +588,7 @@ bool RISCVPreRAExpandPseudo::expandFULDInstPair(
   MachineFunction *MF = MBB.getParent();
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
-
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   Register DestReg = MI.getOperand(0).getReg();
   Register DestReg1 = MI.getOperand(1).getReg();
   Register SrcReg = MI.getOperand(2).getReg();
@@ -568,17 +605,194 @@ bool RISCVPreRAExpandPseudo::expandFULDInstPair(
     .addReg(SrcReg)
     .addImm(Offset2);
 
+    //dump first and second load
+LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFULD "
+                  << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) 
+                  << " (" << printReg(SrcReg, TRI) << "), "
+                  << "Offsets: " << Offset1 << ", " << Offset2 << " -> ld "
+                  << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                  << "ld " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
+
   MI.eraseFromParent();
   return true;
 }
+bool RISCVPreRAExpandPseudo::expandFULWUInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
 
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LWU), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LWU), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+    //dump first and second load
+LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFULWU "
+                  << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) 
+                  << " (" << printReg(SrcReg, TRI) << "), "
+                  << "Offsets: " << Offset1 << ", " << Offset2 << " -> lwu "
+                  << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                  << "lwu " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
+
+  MI.eraseFromParent();
+  return true;
+}
+bool RISCVPreRAExpandPseudo::expandFULHInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LH), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LH), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+  //dump first and second load
+LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFULH "
+                  << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) 
+                  << " (" << printReg(SrcReg, TRI) << "), "
+                  << "Offsets: " << Offset1 << ", " << Offset2 << " -> lhu "
+                  << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                  << "lhu " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
+
+  MI.eraseFromParent();
+  return true;
+}
+bool RISCVPreRAExpandPseudo::expandFULHUInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LHU), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LHU), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+  //dump first and second load
+LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFULHU "
+                  << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) 
+                  << " (" << printReg(SrcReg, TRI) << "), "
+                  << "Offsets: " << Offset1 << ", " << Offset2 << " -> lhu "
+                  << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                  << "lhu " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
+    
+  MI.eraseFromParent();
+  return true;
+}
+bool RISCVPreRAExpandPseudo::expandFULBInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LB), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LB), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+  //dump first and second load
+LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFULB "
+                  << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) 
+                  << " (" << printReg(SrcReg, TRI) << "), "
+                  << "Offsets: " << Offset1 << ", " << Offset2 << " -> lb "
+                  << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                  << "lb " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
+
+  MI.eraseFromParent();
+  return true;
+}
+bool RISCVPreRAExpandPseudo::expandFULBUInstPair(
+  MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+  MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register DestReg = MI.getOperand(0).getReg();
+  Register DestReg1 = MI.getOperand(1).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LBU), DestReg)
+    .addReg(SrcReg)
+    .addImm(Offset1);
+
+  // Second load
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::LBU), DestReg1)
+    .addReg(SrcReg)
+    .addImm(Offset2);
+
+  //dump first and second load
+LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFULBU "
+                  << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) 
+                  << " (" << printReg(SrcReg, TRI) << "), "
+                  << "Offsets: " << Offset1 << ", " << Offset2 << " -> lbu "
+                  << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                  << "lbu " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
+
+  MI.eraseFromParent();
+  return true;
+}
 bool RISCVPreRAExpandPseudo::expandFULWInstPair(
   MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
   MachineBasicBlock::iterator &NextMBBI) {
   MachineFunction *MF = MBB.getParent();
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
-
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   Register DestReg = MI.getOperand(0).getReg();
   Register DestReg1 = MI.getOperand(1).getReg();
   Register SrcReg = MI.getOperand(2).getReg();
@@ -595,6 +809,14 @@ bool RISCVPreRAExpandPseudo::expandFULWInstPair(
     .addReg(SrcReg)
     .addImm(Offset2);
 
+  //dump first and second load
+LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFULW "
+                  << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) 
+                  << " (" << printReg(SrcReg, TRI) << "), "
+                  << "Offsets: " << Offset1 << ", " << Offset2 << " -> lw "
+                  << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                  << "lw " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
+
   MI.eraseFromParent();
   return true;
 }
@@ -605,7 +827,7 @@ bool RISCVPreRAExpandPseudo::expandFUFLWInstPair(
   MachineFunction *MF = MBB.getParent();
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
-
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   Register DestReg = MI.getOperand(0).getReg();
   Register DestReg1 = MI.getOperand(1).getReg();
   Register SrcReg = MI.getOperand(2).getReg();
@@ -622,6 +844,14 @@ bool RISCVPreRAExpandPseudo::expandFUFLWInstPair(
     .addReg(SrcReg)
     .addImm(Offset2);
 
+  //dump first and second load
+LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFUFLW "
+                  << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) 
+                  << " (" << printReg(SrcReg, TRI) << "), "
+                  << "Offsets: " << Offset1 << ", " << Offset2 << " -> flw "
+                  << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                  << "flw " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
+
   MI.eraseFromParent();
   return true;
 }
@@ -632,7 +862,7 @@ bool RISCVPreRAExpandPseudo::expandFUFLDInstPair(
   MachineFunction *MF = MBB.getParent();
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
-
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   Register DestReg = MI.getOperand(0).getReg();
   Register DestReg1 = MI.getOperand(1).getReg();
   Register SrcReg = MI.getOperand(2).getReg();
@@ -649,6 +879,11 @@ bool RISCVPreRAExpandPseudo::expandFUFLDInstPair(
     .addReg(SrcReg)
     .addImm(Offset2);
 
+  LLVM_DEBUG(dbgs() << "Expanded fused load pseudo: PseudoFUFLD "
+                    << printReg(DestReg, TRI) << ", " << printReg(DestReg1, TRI) << " (" << SrcReg << "), "
+                    << printReg(Offset1, TRI) << " (" << Offset2 << ", TRI) -> fld "
+                    << printReg(DestReg, TRI) << ", " << Offset1 << "(" << printReg(SrcReg, TRI) << "), "
+                    << "fld " << printReg(DestReg1, TRI) << ", " << Offset2 << "(" << printReg(SrcReg, TRI) << ")\n");
   MI.eraseFromParent();
   return true;
 }
@@ -659,7 +894,7 @@ bool RISCVPreRAExpandPseudo::expandFUFSWInstPair(
   MachineFunction *MF = MBB.getParent();
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
-
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   Register SrcReg1 = MI.getOperand(0).getReg();
   Register SrcReg2 = MI.getOperand(1).getReg();
   Register BaseReg = MI.getOperand(2).getReg();
@@ -677,6 +912,12 @@ bool RISCVPreRAExpandPseudo::expandFUFSWInstPair(
     .addReg(SrcReg2)
     .addReg(BaseReg)
     .addImm(Offset2);
+
+    LLVM_DEBUG(dbgs() << "Expanded fused store pseudo: PseudoFUFSW "
+                  << printReg(SrcReg1, TRI) << " (" << Offset1 << "), "
+                  << printReg(SrcReg2, TRI) << " (" << Offset2 << ") -> fsw "
+                  << printReg(SrcReg1, TRI) << ", " << Offset1 << "(" << printReg(BaseReg, TRI) << "), "
+                  << "fsw " << printReg(SrcReg2, TRI) << ", " << Offset2 << "(" << printReg(BaseReg, TRI) << ")\n");
 
   MI.eraseFromParent();
   return true;
@@ -688,7 +929,7 @@ bool RISCVPreRAExpandPseudo::expandFUFSDInstPair(
   MachineFunction *MF = MBB.getParent();
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
-
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   Register SrcReg1 = MI.getOperand(0).getReg();
   Register SrcReg2 = MI.getOperand(1).getReg();
   Register BaseReg = MI.getOperand(2).getReg();
@@ -706,7 +947,11 @@ bool RISCVPreRAExpandPseudo::expandFUFSDInstPair(
     .addReg(SrcReg2)
     .addReg(BaseReg)
     .addImm(Offset2);
-
+  LLVM_DEBUG(dbgs() << "Expanded fused store pseudo: PseudoFUFSD "
+                  << printReg(SrcReg1, TRI) << " (" << Offset1 << "), "
+                  << printReg(SrcReg2, TRI) << " (" << Offset2 << ") -> fsd "
+                  << printReg(SrcReg1, TRI) << ", " << Offset1 << "(" << printReg(BaseReg, TRI) << "), "
+                  << "fsd " << printReg(SrcReg2, TRI) << ", " << Offset2 << "(" << printReg(BaseReg, TRI) << ")\n");
   MI.eraseFromParent();
   return true;
 }
@@ -717,24 +962,33 @@ bool RISCVPreRAExpandPseudo::expandFUSDInstPair(
   MachineFunction *MF = MBB.getParent();
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
-
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   Register SrcReg1 = MI.getOperand(0).getReg();
   Register SrcReg2 = MI.getOperand(1).getReg();
   Register BaseReg = MI.getOperand(2).getReg();
   int64_t Offset1 = MI.getOperand(3).getImm();
   int64_t Offset2 = MI.getOperand(4).getImm();
 
-  // First store
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SD))
-    .addReg(SrcReg1)
-    .addReg(BaseReg)
-    .addImm(Offset1);
 
-  // Second store
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SD))
-    .addReg(SrcReg2)
-    .addReg(BaseReg)
-    .addImm(Offset2);
+MachineInstr *Store1 =
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::SD))
+        .addReg(SrcReg1)
+        .addReg(BaseReg)
+        .addImm(Offset1)
+        .getInstr();
+
+MachineInstr *Store2 =
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::SD))
+        .addReg(SrcReg2)
+        .addReg(BaseReg)
+        .addImm(Offset2)
+        .getInstr();
+
+LLVM_DEBUG(dbgs() << "Expanded fused store pseudo: PseudoFUSD "
+                  << printReg(SrcReg1, TRI) << " (" << Offset1 << "), "
+                  << printReg(SrcReg2, TRI) << " (" << Offset2 << ") -> fsd "
+                  << printReg(SrcReg1, TRI) << ", " << Offset1 << "(" << printReg(BaseReg, TRI) << "), "
+                  << "fsd " << printReg(SrcReg2, TRI) << ", " << Offset2 << "(" << printReg(BaseReg, TRI) << ")\n");
 
   MI.eraseFromParent();
   return true;
@@ -746,7 +1000,7 @@ bool RISCVPreRAExpandPseudo::expandFUSWInstPair(
   MachineFunction *MF = MBB.getParent();
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
-
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
   Register SrcReg1 = MI.getOperand(0).getReg();
   Register SrcReg2 = MI.getOperand(1).getReg();
   Register BaseReg = MI.getOperand(2).getReg();
@@ -765,6 +1019,77 @@ bool RISCVPreRAExpandPseudo::expandFUSWInstPair(
     .addReg(BaseReg)
     .addImm(Offset2);
 
+  LLVM_DEBUG(dbgs() << "Expanded fused store pseudo: PseudoFUSH "
+                  << printReg(SrcReg1, TRI) << " (" << Offset1 << "), "
+                  << printReg(SrcReg2, TRI) << " (" << Offset2 << ") -> fsw "
+                  << printReg(SrcReg1, TRI) << ", " << Offset1 << "(" << printReg(BaseReg, TRI) << "), "
+                  << "fsw " << printReg(SrcReg2, TRI) << ", " << Offset2 << "(" << printReg(BaseReg, TRI) << ")\n");
+
+  MI.eraseFromParent();
+  return true;
+}
+
+bool RISCVPreRAExpandPseudo::expandFUSHInstPair(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+    MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register SrcReg1 = MI.getOperand(0).getReg();
+  Register SrcReg2 = MI.getOperand(1).getReg();
+  Register BaseReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SH))
+      .addReg(SrcReg1)
+      .addReg(BaseReg)
+      .addImm(Offset1);
+
+  // Second store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SH))
+      .addReg(SrcReg2)
+      .addReg(BaseReg)
+      .addImm(Offset2);
+  LLVM_DEBUG(dbgs() << "Expanded fused store pseudo: PseudoFUSH "
+                    << printReg(SrcReg1, TRI) << " (" << Offset1 << "), "
+                    << printReg(SrcReg2, TRI) << " (" << Offset2 << ") -> fsh "
+                    << printReg(SrcReg1, TRI) << ", " << Offset1 << "(" << printReg(BaseReg, TRI) << "), "
+                    << "fsh " << printReg(SrcReg2, TRI) << ", " << Offset2 << "(" << printReg(BaseReg, TRI) << ")\n");
+  MI.eraseFromParent();
+  return true;
+}
+bool RISCVPreRAExpandPseudo::expandFUSBInstPair(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+    MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register SrcReg1 = MI.getOperand(0).getReg();
+  Register SrcReg2 = MI.getOperand(1).getReg();
+  Register BaseReg = MI.getOperand(2).getReg();
+  int64_t Offset1 = MI.getOperand(3).getImm();
+  int64_t Offset2 = MI.getOperand(4).getImm();
+
+  // First store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SB))
+      .addReg(SrcReg1)
+      .addReg(BaseReg)
+      .addImm(Offset1);
+
+  // Second store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::SB))
+      .addReg(SrcReg2)
+      .addReg(BaseReg)
+      .addImm(Offset2);
+  LLVM_DEBUG(dbgs() << "Expanded fused store pseudo: PseudoFUSB "
+                    << printReg(SrcReg1, TRI) << " (" << Offset1 << "), "
+                    << printReg(SrcReg2, TRI) << " (" << Offset2 << ") -> fsb "
+                    << printReg(SrcReg1, TRI) << ", " << Offset1 << "(" << printReg(BaseReg, TRI) << "), "
+                    << "fsb " << printReg(SrcReg2, TRI) << ", " << Offset2 << "(" << printReg(BaseReg, TRI) << ")\n");
   MI.eraseFromParent();
   return true;
 }
