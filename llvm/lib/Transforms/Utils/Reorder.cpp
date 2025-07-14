@@ -15,6 +15,11 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Analysis/AliasGraph.h"
+#include "llvm/Analysis/BasicAliasAnalysis.h"
+#include "llvm/Analysis/GlobalsModRef.h"
+#include "llvm/Analysis/MemoryLocation.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
@@ -33,6 +38,7 @@
   //create global variables for wasted and reorder counts
  int globalWasted = 0;
  int globalReorder = 0;
+ int globaldiffchainedgraphaa = 0;
  int globalAcrossCallReorder = 0;
  int globalAcrossCallWasted = 0;
  static cl::opt<bool> EnableSpeculativeReordering(
@@ -122,12 +128,17 @@ static bool isTrueContiguous(APInt StartAddr1, APInt EndAddr1, APInt StartAddr2,
 //                                       FunctionAnalysisManager &AM) {
 //   errs() << F.getName() << "\n";
 //   return PreservedAnalyses::all();
-PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
-
-  AliasAnalysis &AA = AM.getResult<AAManager>(F);
-  auto &DA = AM.getResult<DependenceAnalysis>(F);
+PreservedAnalyses ReorderPass::runonFunction(Function &F, ModuleAnalysisManager &MAM, FunctionAnalysisManager &FAM) {
+  // auto &MAMProxy = AM.getResult<ModuleAnalysisManagerFunctionProxy>(F);
+  Module &M = *F.getParent();
+  AliasAnalysis &AA = FAM.getResult<AAManager>(F);
+  BasicAAResult &BasicAAR = FAM.getResult<BasicAA>(F);
+  auto &DA = FAM.getResult<DependenceAnalysis>(F);
   auto &DL = F.getParent()->getDataLayout();
-  auto &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
+  auto &SE = FAM.getResult<ScalarEvolutionAnalysis>(F);
+  GraphAAResult &GraphAAR = MAM.getResult<GraphAA>( *(F.getParent()));
+  auto &GlobalsAAR = MAM.getResult<GlobalsAA>( *(F.getParent()));
+  SimpleAAQueryInfo SimpleAAQI (AA);
   std::vector<Instruction *> defChain;
   SetVector <Instruction *> Int_ins;
   SetVector <Instruction *> call_ins;
@@ -314,6 +325,7 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                           ModRefInfo CallAR = AA.getModRefInfo(callInst, MemoryLocation::get(loadInst));
 
                           if(callInst->mayHaveSideEffects() || CallAR == ModRefInfo::ModRef || CallAR == ModRefInfo::Ref) { //Keep both mod and ref
+                            assert((CallAR != ModRefInfo::NoModRef) && "CallInst should not have NoModRef");
                             if(callInst->mayHaveSideEffects()){
                               errs() << "Call may have side effects" << "\n";
                             }else {
@@ -327,6 +339,7 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                             errs() << "Call modifies or references memory" << "\n"; //modifies or 
                             call_in_catalyst_mod_load = true;
                             globalAcrossCallWasted++;
+                            run_globalAcrossCallWasted++;
                             break;
                           } else {
                             errs() << "Call does not modify or references memory" << "\n";
@@ -388,8 +401,30 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                           errs() << "Non Speculative reordering" << "\n";
                           AliasResult AR = AA.alias(MemoryLocation::get(loadInst),MemoryLocation::get(cast<StoreInst>(*it)));
                           AliasResult AR2 = AA.alias(MemoryLocation::get(prevLoadInst),MemoryLocation::get(cast<StoreInst>(*it)));
-
-                          if ((AR == AliasResult::MayAlias || AR == AliasResult::MustAlias) && (AR2 == AliasResult::MayAlias || AR2 == AliasResult::MustAlias)) {
+                          AliasResult AR_tail = GraphAAR.alias(MemoryLocation::get(loadInst), MemoryLocation::get(cast<StoreInst>(*it)), SimpleAAQI, nullptr);
+                          AliasResult AR_head = GraphAAR.alias(MemoryLocation::get(prevLoadInst), MemoryLocation::get(cast<StoreInst>(*it)), SimpleAAQI, nullptr);
+                                assert((AR_tail != AliasResult::NoAlias) || (AR != AliasResult::MustAlias && AR != AliasResult::PartialAlias)
+                                  && "Contradiction tail node in results between graph-aa and default-aa-pipeline."
+                                );
+                                assert((AR_head != AliasResult::NoAlias) || (AR != AliasResult::MustAlias && AR != AliasResult::PartialAlias)
+                                  && "Contradiction head node in results between graph-aa and default-aa-pipeline."
+                                );
+                          AliasResult GraphDefARChained_tail = (AR_tail == AliasResult::MayAlias) ? AR : AR_tail;
+                          AliasResult GraphDefARChained_head = (AR_head == AliasResult::MayAlias) ? AR : AR_head;
+                          if(AR == AliasResult::MayAlias){
+                            if(AR_tail == AliasResult::NoAlias || AR_tail == AliasResult::MustAlias){
+                              globaldiffchainedgraphaa++;
+                              run_globaldiffchainedgraphaa++;
+                            }
+                          }
+                          if(AR2 == AliasResult::MayAlias){
+                            if(AR_head == AliasResult::NoAlias || AR_tail == AliasResult::MustAlias){
+                              globaldiffchainedgraphaa++;
+                            }
+                          }
+                          errs() << "GraphDefARChained_tail: " << GraphDefARChained_tail << "\n";
+                          errs() << "GraphDefARChained_head: " << GraphDefARChained_head << "\n";
+                          if ((GraphDefARChained_tail == AliasResult::MayAlias || GraphDefARChained_tail == AliasResult::MustAlias) && (AR2 == AliasResult::MayAlias || AR2 == AliasResult::MustAlias)) {
                               Int_ins.clear();
                               wasted++;
                               Aliases_with_currLoad = true;
@@ -403,10 +438,10 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                               currentInst = nullptr;
                               loadInst = nullptr;
                               break;
-                          } else if ((AR == AliasResult::MayAlias ||
-                                      AR == AliasResult::MustAlias) &&
-                                    (AR2 != AliasResult::MayAlias &&
-                                      AR2 != AliasResult::MustAlias)) {
+                          } else if ((GraphDefARChained_tail == AliasResult::MayAlias ||
+                                      GraphDefARChained_tail == AliasResult::MustAlias) &&
+                                    (GraphDefARChained_head != AliasResult::MayAlias &&
+                                      GraphDefARChained_head != AliasResult::MustAlias)) {
                               Aliases_with_currLoad = true;
                               Aliases_with_prevLoad = false;
                               errs() << "Catalyst Store Aliases with prevload: " << "False" << "\n";
@@ -418,28 +453,28 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                               currentInst = nullptr;
                               loadInst = nullptr;
                               break;
-                          } else if ((AR != AliasResult::MayAlias &&
-                                      AR != AliasResult::MustAlias) &&
-                                    (AR2 == AliasResult::MayAlias ||
-                                      AR2 == AliasResult::MustAlias)) {
+                          } else if ((GraphDefARChained_tail != AliasResult::MayAlias &&
+                                      GraphDefARChained_tail != AliasResult::MustAlias) &&
+                                    (GraphDefARChained_head == AliasResult::MayAlias ||
+                                      GraphDefARChained_head == AliasResult::MustAlias)) {
                               Aliases_with_currLoad = false;
                               Aliases_with_prevLoad = true;
                               errs() << "Catalyst Store Aliases with prevload: " << "True" << "\n";
                               errs() << "Catalyst Store Aliases with load: " << "False" << "\n";
-                          } else if ((AR != AliasResult::MayAlias &&
-                                      AR != AliasResult::MustAlias) &&
-                                    (AR2 != AliasResult::MayAlias &&
-                                      AR2 != AliasResult::MustAlias)) {
+                          } else if ((GraphDefARChained_tail != AliasResult::MayAlias &&
+                                      GraphDefARChained_tail != AliasResult::MustAlias) &&
+                                    (GraphDefARChained_head != AliasResult::MayAlias &&
+                                      GraphDefARChained_head != AliasResult::MustAlias)) {
                               Aliases_with_currLoad = false;
                               Aliases_with_prevLoad = false;
                               errs() << "Catalyst Store Aliases with prevload: " << "False" << "\n";
                               errs() << "Catalyst Store Aliases with load: " << "False" << "\n";
                           } 
-                          if((AR == AliasResult:: MayAlias)){
+                          if((GraphDefARChained_tail == AliasResult:: MayAlias)){
                             errs() << "Catalyst Store Aliases with load: " << "May Alias" << "\n";
                           }
 
-                          if((AR2 == AliasResult:: MayAlias)){
+                          if((GraphDefARChained_head == AliasResult:: MayAlias)){
                             errs() << "Catalyst Store Aliases with prevload: " << "May Alias" << "\n";
                           }
                         } else {
@@ -450,6 +485,7 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                               (AR2 == AliasResult::MustAlias)) {
                               Int_ins.clear();
                               wasted++;
+                              run_globalWasted++;
                               Aliases_with_currLoad = true;
                               Aliases_with_prevLoad = true;
                               errs() << "Catalyst Store Aliases with prevload: " << "True" << "\n";
@@ -677,12 +713,14 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
                 currentInst = nullptr;
                 loadInst = nullptr;
                 globalReorder++;
+                run_globalReorder++;
                 distance = 0;
               }else {
                 currentInst = nullptr;
                 loadInst = nullptr;
                 it_bb++;
                 globalWasted++;
+                run_globalWasted++;
               }
               if(UseChain_contains_prevLoad){
                 distance = 0;
@@ -742,6 +780,25 @@ PreservedAnalyses ReorderPass::run(Function &F, FunctionAnalysisManager &AM) {
       errs() << "Number of global wasted: " << globalWasted << "\n";
       errs() << "Number of successful reorders: " << globalReorder << "\n";
       errs() << "Number of across call wasted: " << globalAcrossCallWasted << "\n";
+      errs() << "Number of global diff chained graph-aa: " << globaldiffchainedgraphaa << "\n";
     return PreservedAnalyses::all();
  }
 
+PreservedAnalyses ReorderPass::run(Module &M, ModuleAnalysisManager &AM) {
+    // Initialize the analysis manager
+    for(auto &F : M) {
+      if (F.isDeclaration())
+        continue;
+      FunctionAnalysisManager &FAM =
+          AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+    // Run the reordering pass
+      this->runonFunction(F, AM, FAM);
+    }
+    errs() << "run_globalWasted: " << run_globalWasted << "\n";
+    errs() << "run_globalReorder: " << run_globalReorder << "\n";
+    errs() << "run_globalAcrossCallReorder: " << run_globalAcrossCallReorder << "\n";
+    errs() << "run_globalAcrossCallWasted: " << run_globalAcrossCallWasted << "\n";
+    errs() << "run_globaldiffchainedgraphaa: " << run_globaldiffchainedgraphaa << "\n";
+    // Return preserved analyses
+    return PreservedAnalyses::all();
+}

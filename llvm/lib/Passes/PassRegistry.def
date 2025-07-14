@@ -143,6 +143,7 @@ MODULE_PASS("view-callgraph", CallGraphViewerPass())
 MODULE_PASS("wholeprogramdevirt", WholeProgramDevirtPass())
 MODULE_PASS("build-alias-graph", AliasGraphBuilder())
 MODULE_PASS("aliastestpass", AliasTestPass())
+MODULE_PASS("reorder", ReorderPass())
 #undef MODULE_PASS
 
 #ifndef MODULE_PASS_WITH_PARAMS
@@ -321,7 +322,7 @@ FUNCTION_PASS("gvn-sink", GVNSinkPass())
 FUNCTION_PASS("helloworld", HelloWorldPass())
 FUNCTION_PASS("paam", PAAMWorldPass())
 FUNCTION_PASS("markroi", MarkROIPass())
-FUNCTION_PASS("reorder", ReorderPass())
+// FUNCTION_PASS("reorder", ReorderPass())
 FUNCTION_PASS("reorder-speculative", ReorderSpeculativePass())
 FUNCTION_PASS("reorderstore", ReorderStorePass())
 FUNCTION_PASS("unrollinnerloop", UnrollInnermostLoopPass())
