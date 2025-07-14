@@ -37,7 +37,7 @@ using namespace llvm;
 
 //#define QUERY_STATS
 //#define TEST_MODREF
-#define COMPARE_RESULT
+//#define COMPARE_RESULT
 //#define CALL_MODREF
 #define SIMPLE_EVAL
 //#define TEST_ALL_MEMLOC
@@ -295,22 +295,16 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
   
   AliasAnalysis &AA = FAM.getResult<AAManager>(F);
 
-#ifdef COMPARE_RESULT  
   auto & GraphAAR = MAM.getResult<GraphAA>( *(F.getParent()));
   auto & GlobalsAAR = MAM.getResult<GlobalsAA>(*(F.getParent()));
   SimpleAAQueryInfo SimpleAAQI (AA);
-#endif // COMPARE_RESULT
 
   auto Sets = getMemInstr(F);
 
-  errs() << " contains the following load and store : \n";
-  for (Value *Load : Sets.Loads)   {
-    Load->printAsOperand(errs());
-    errs() << " : " << *Load << "\n";
-  }
-  for (Value *Store : Sets.Stores) {
-    errs() << *Store << "\n";
-  }
+  //errs() << " contains the following mem instr : \n";
+  //for (Value *Load : Sets.Loads) { Load->printAsOperand(errs()); errs() << " : " << *Load << "\n"; }
+  //for (Value *Store : Sets.Stores) errs() << *Store << "\n";
+  //for (Value *Call : Sets.Calls) errs() << *Call << "\n";
 
 #ifdef COMPARE_RESULT
   int betterResult = 0;
@@ -333,13 +327,16 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
   for (auto *Load : Sets.Loads) {
      MemoryLocation LoadLoc = MemoryLocation::get(Load);
 
+  errs() << "ANALYZIS ON FUNCTION " << F.getName() << " ---------------------------\n";
+
 #ifdef CALL_MODREF
     for (auto *Call : Sets.Calls){
       ModRefInfo MRIAA = AA.getModRefInfo(Load, Call);
       ModRefInfo MRIGraphAA = GraphAAR.getModRefInfo(Call, LoadLoc, SimpleAAQI);
 
-      errs() << " In func " << Call->getParent()->getName() << " : " 
-            << *Call << " : " << MRIAA << " ~ " << MRIGraphAA << " : " << *Load << "\n";
+      if(auto caller = Call->getCalledFunction();
+         caller && ! caller->getName().consume_front("llvm.lifetime"))
+        errs() << *Call << " : " << MRIAA << " ~ " << MRIGraphAA << " : " << *Load << "\n";
     }
 
 #else
@@ -387,8 +384,6 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
 #endif // CALL_MODREF
   }
 
-  errs() << "STATS ON FUNCTION " << F.getName() << " ---------------------------\n";
-
 #ifdef COMPARE_RESULT
   errs() << "GraphAA result that are better than default AA result :  " << betterResult << "\n"
   		 << "Total number of queries : " << totalRequest << "\n"
@@ -435,7 +430,7 @@ void pairEvaluate(Function &F, ModuleAnalysisManager &MAM,
       AliasResult DefAR = AA.alias(ptr1, ptr2);
 
       assert(
-        (GrAR != AliasResult::NoAlias) || (DefAR != AliasResult::MustAlias && DefAR != AliasResult::PartialAlias)
+        ((GrAR != AliasResult::NoAlias) || (DefAR != AliasResult::MustAlias && DefAR != AliasResult::PartialAlias))
         && "Contradiction in results between graph-aa and default-aa-pipeline."
       );
       AliasResult AAR = (GrAR == AliasResult::NoAlias) ? GrAR : DefAR;
@@ -450,22 +445,20 @@ void pairEvaluate(Function &F, ModuleAnalysisManager &MAM,
 //////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////
-std::vector<unsigned int> defCounts      (5,0);
-std::vector<unsigned int> basicCounts    (5,0);
-std::vector<unsigned int> graphCounts    (5,0);
-std::vector<unsigned int> graphDefCounts (5,0);
-
-#define PRINT_STAT(aa_name, counts) do { \
+#define PRINT_STAT(aa_name, counts, isModRef) do { \
     errs() << "Result of " << aa_name << " query on loads and store : \n" \
         << "Total query performed : " << counts[4] << "\n" \
-        << "NoAlias : " << counts[0] << "; MayAlias :" << counts[1]  \
-        << "; PartialAlias : " << counts[2] << "; MustAlias : " << counts[3] << "\n"; \
+        << (isModRef ? "NoModRef : " : "NoAlias : ") << counts[0] \
+        << (isModRef ? "; Ref : " :"; MayAlias : ") << counts[1]  \
+        << (isModRef ? "; Mod : " :"; PartialAlias : ") << counts[2] \
+        << (isModRef ? "; ModRef : " :"; MustAlias : ") << counts[3] << "\n"; \
    \
     if(counts[4]!=0) { \
-      errs() << "Part in percent : no=" << PROP(counts[0], counts[4]) << "%/"  \
-             << "may=" << PROP(counts[1], counts[4]) << "%/" \
-             << "part=" << PROP(counts[2], counts[4]) << "%/" \
-             << "must=" << PROP(counts[3], counts[4]) << "%\n" \
+      errs() << "Part in percent : " \
+             << (isModRef ? "nomodref=" : "no=") << PROP(counts[0], counts[4]) << "%/"  \
+             << (isModRef ? "ref=" : "may=") << PROP(counts[1], counts[4]) << "%/" \
+             << (isModRef ? "mod=" : "part=") << PROP(counts[2], counts[4]) << "%/" \
+             << (isModRef ? "modref=" : "must=") << PROP(counts[3], counts[4]) << "%\n" \
              << " // -------------------------------------------------- //\n"; \
     } \
 } while(false)
@@ -477,6 +470,16 @@ void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM,
                             std::vector<unsigned int> &counts){
   if(F.empty()) return;
 
+  std::vector<unsigned int> defaultAlias  (5,0);
+  std::vector<unsigned int> basicAlias    (5,0);
+  std::vector<unsigned int> graphAlias    (5,0);
+  std::vector<unsigned int> graphDefAlias (5,0);
+
+  std::vector<unsigned int> defaultModRef  (5,0);
+  std::vector<unsigned int> basicModRef    (5,0);
+  std::vector<unsigned int> graphModRef    (5,0);
+  std::vector<unsigned int> graphDefModRef (5,0);
+
   AliasAnalysis &DefAAPipeline = FAM.getResult<AAManager>(F);
   BasicAAResult &BasicAAR = FAM.getResult<BasicAA>(F);
   GraphAAResult &GraphAAR = MAM.getResult<GraphAA>(*(F.getParent()));
@@ -486,6 +489,19 @@ void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM,
   struct MemInstSets Sets = getMemInstr(F);
   for(auto * Load : Sets.Loads){
     MemoryLocation LoadLoc = MemoryLocation::get(dyn_cast<LoadInst>(Load));
+
+    for(auto * Call : Sets.Calls) {
+      ModRefInfo DefMRI = DefAAPipeline.getModRefInfo(Call, LoadLoc, SimpleAAQI);
+      ModRefInfo BasicMRI = BasicAAR.getModRefInfo(Call, LoadLoc, SimpleAAQI);
+      ModRefInfo GraphMRI = GraphAAR.getModRefInfo(Call, LoadLoc, SimpleAAQI);
+
+      ModRefInfo GraphDefMRI = (GraphMRI == ModRefInfo::ModRef) ? DefMRI : GraphMRI;
+
+      defaultModRef[(int)DefMRI]++; defaultModRef[4]++;
+      basicModRef[(int)BasicMRI]++; basicModRef[4]++;
+      graphModRef[(int)GraphMRI]++; graphModRef[4]++;
+      graphDefModRef[(int)GraphDefMRI]++; graphDefModRef[4]++;
+    }
     
     for(auto * Store : Sets.Stores){
       MemoryLocation StoreLoc = MemoryLocation::get(dyn_cast<StoreInst>(Store));
@@ -494,23 +510,28 @@ void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM,
       AliasResult DefAR = DefAAPipeline.alias(LoadLoc, StoreLoc);
 
       assert(
-        (GrAR != AliasResult::NoAlias) || (DefAR != AliasResult::MustAlias && DefAR != AliasResult::PartialAlias)
+        ((GrAR != AliasResult::NoAlias) || (DefAR != AliasResult::MustAlias && DefAR != AliasResult::PartialAlias))
         && "Contradiction in results between graph-aa and default-aa-pipeline."
       );
       AliasResult GraphDefAR = (GrAR == AliasResult::MayAlias) ? DefAR : GrAR;
       
-      defCounts[(int)DefAR]++; defCounts[4]++;
-      basicCounts[(int)BasAR]++; basicCounts[4]++;
-      graphCounts[(int)GrAR]++; graphCounts[4]++;
-      graphDefCounts[(int)GraphDefAR]++; graphDefCounts[4]++;
+      defaultAlias[(int)DefAR]++; defaultAlias[4]++;
+      basicAlias[(int)BasAR]++; basicAlias[4]++;
+      graphAlias[(int)GrAR]++; graphAlias[4]++;
+      graphDefAlias[(int)GraphDefAR]++; graphDefAlias[4]++;
     }
   }
 
   errs() << "In function : \033[31m" << F.getName() << "\033[0m \n";
-  PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphCounts);
-  PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicCounts);
-  PRINT_STAT("\033[32mDEFAULT AA PIPELINE\033[0m", defCounts);
-  PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefCounts);
+  PRINT_STAT("\033[32mDEFAULT AA PIPELINE\033[0m", defaultAlias, false);
+  PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphAlias, false);
+  PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicAlias, false);
+  PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefAlias, false);
+  errs() << "//********************************************************************//\n\n";
+  PRINT_STAT("\033[32mDEFAULT AA PIPELINE\033[0m", defaultModRef, true);
+  PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphModRef, true);
+  PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicModRef, true);
+  PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefModRef, true);
   errs() << "//====================================================================//\n\n";
 }
 

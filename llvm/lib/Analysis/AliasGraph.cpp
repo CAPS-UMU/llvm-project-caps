@@ -32,6 +32,8 @@
 using namespace llvm;
 using namespace std;
 
+//#define AAGRAPH_BUILD_FRAMES
+
 #define DEBUG_TYPE "alias-graph-aa"
 
 // Build the alias graph upon a module
@@ -44,14 +46,34 @@ AliasGraph::AliasGraph(Module &M) {
     AnalyzedFuncSet.clear();
     this->M = &M;
 
-    set<Function *> uncalledFunctions;
+    set<Function *> unusedFunctions;
+    set<Function *> notAnalyzedFunctions;
 
-    for(Function &F : M) 
+    for(Function &F : M) {
         if (F.use_empty())
-            uncalledFunctions.insert(&F);
-    
-    for(Function * F : uncalledFunctions) {
-        errs() << "Analyzing function : " << F->getName() << "\n";
+            unusedFunctions.insert(&F);
+        else
+            notAnalyzedFunctions.insert(&F);
+    }
+
+    // begin by analyzing the unused function
+    for(Function * F : unusedFunctions) {
+        SetVector<CallInst*> empty_callsites;
+        std::pair<Function*,SetVector<CallInst*>> entry (F, empty_callsites);
+        this->AnalyzedFuncSet.insert(entry);
+
+        this->analyzeFunction(F);
+    }
+
+    // continue by analyzing function that have no direct call
+    for(auto *F : notAnalyzedFunctions) {
+        if(this->AnalyzedFuncSet.contains(F)) 
+            continue;
+
+        SetVector<CallInst*> empty_callsites;
+        std::pair<Function*,SetVector<CallInst*>> entry (F, empty_callsites);
+        this->AnalyzedFuncSet.insert(entry);
+
         this->analyzeFunction(F);
     }
 }
@@ -257,7 +279,10 @@ void AliasGraph::analyzeFunction(Function* F){
     for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
       Instruction *iInst = dyn_cast<Instruction>(&(*i));
       this->HandleInst(iInst);
-      LLVM_DEBUG(writeToDot("aliasgraph"+itostr(instrCount++)+".dot"));
+
+#ifdef AAGRAPH_BUILD_FRAMES
+      writeToDot("../aliasgraph"+itostr(instrCount++)+".dot");
+#endif // AAGRAPH_BUILD_FRAMES
     }
 }
 
@@ -545,6 +570,7 @@ void AliasGraph::HandleCai(CallInst *CAI) {
         argCallIt++;
     } 
 
+    // analyzing the function on this callsite if not already done
     auto entry = AnalyzedFuncSet.find(calledFunc);
     if(entry == AnalyzedFuncSet.end() || ! entry->second.contains(CAI)) {
         if(entry == AnalyzedFuncSet.end()) {
@@ -665,19 +691,39 @@ AliasResult GraphAAResult::alias(const MemoryLocation &LocA, const MemoryLocatio
 ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
                          AAQueryInfo &AAQI) {
     AliasNode * node = AG.getNode(Loc);
+    assert(node != nullptr && "In mod ref of graph aa, a memory location wasn't registered in the graph.");
+
     Function * CalledF = Call->getCalledFunction();
-    if(CalledF == nullptr) // indirect call, can't predict the effect on memory
-        return ModRefInfo::ModRef;
+
+    // indirect call, can only say there is no mod ref if
+    // the parameter don't alias with the given memory location
+    if(CalledF == nullptr) {
+        for(auto &param : Call->args()) {
+            auto val = node->aliasclass.find(param.get());
+            if(val != node->end())
+                // there is a may alias relation, then mod ref is output
+                return ModRefInfo::ModRef;
+        }
+
+        return ModRefInfo::NoModRef;
+    }
     
+    // function declaration is known, we can exploit
+    // the argument indication to check for ModRefInfo
+    bool mayRef = false;
     for(auto &param : Call->args()){
         auto val = node->aliasclass.find(param.get());
         auto arg = CalledF->getArg(param.getOperandNo());
-        if(val != node->end() && ! arg->onlyReadsMemory()) {
-            return ModRefInfo::ModRef;
+        if(val != node->end()) {
+            if(! arg->onlyReadsMemory()) {
+                return ModRefInfo::ModRef;
+            } else {
+                mayRef = true;
+            }
         }
     }
     
-    return AAResultBase::getModRefInfo(Call, Loc, AAQI);
+    return mayRef ? ModRefInfo::Ref : ModRefInfo::NoModRef;
 }
 
 MemoryEffects GraphAAResult::getMemoryEffects(const Function *F) {
