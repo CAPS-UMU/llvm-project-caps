@@ -10,6 +10,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
 
@@ -56,12 +57,13 @@ AliasGraph::AliasGraph(Module &M) {
             notAnalyzedFunctions.insert(&F);
     }
 
-    // begin by analyzing the unused function
+    // begin by analyzing the function unused in this module
     for(Function * F : unusedFunctions) {
         SetVector<CallInst*> empty_callsites;
         std::pair<Function*,SetVector<CallInst*>> entry (F, empty_callsites);
         this->AnalyzedFuncSet.insert(entry);
 
+        LLVM_DEBUG(dbgs() << "Analyzing : \033[30m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
     }
 
@@ -74,6 +76,7 @@ AliasGraph::AliasGraph(Module &M) {
         std::pair<Function*,SetVector<CallInst*>> entry (F, empty_callsites);
         this->AnalyzedFuncSet.insert(entry);
 
+        LLVM_DEBUG(dbgs() << "Analyzing : \033[33m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
     }
 }
@@ -272,7 +275,8 @@ bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
 /// INTERPROCEDURAL ALIAS ANALYSIS
 int instrCount = 0; // for debug only
 void AliasGraph::analyzeFunction(Function* F){
-    if(!F) return;
+    if(!F || F->getIntrinsicID() != Intrinsic::not_intrinsic) return;
+
     //testing what happens if a function is analyzed several times
     LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << "\n"); 
 
@@ -551,7 +555,7 @@ void AliasGraph::HandleCai(CallInst *CAI) {
 
     auto calledFunc = CAI->getCalledFunction();
     if( calledFunc == nullptr ||
-        calledFunc->getName().consume_front("llvm.lifetime")) 
+        calledFunc->getIntrinsicID() != Intrinsic::not_intrinsic) 
         // ignoring indirect call and function for lifetime of static alloc object
         return;  
 
@@ -693,36 +697,41 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
     AliasNode * node = AG.getNode(Loc);
     assert(node != nullptr && "In mod ref of graph aa, a memory location wasn't registered in the graph.");
 
-    Function * CalledF = Call->getCalledFunction();
-
     // indirect call, can only say there is no mod ref if
     // the parameter don't alias with the given memory location
-    if(CalledF == nullptr) {
+    if(Call->isIndirectCall()) {
         for(auto &param : Call->args()) {
-            auto val = node->aliasclass.find(param.get());
-            if(val != node->end())
+            auto *paramNode = AG.getNode(param.get());
+            if(AG.checkNodeConnectivity(node, paramNode))
                 // there is a may alias relation, then mod ref is output
                 return ModRefInfo::ModRef;
         }
 
         return ModRefInfo::NoModRef;
     }
-    
+
+    Function * CalledF = Call->getCalledFunction();
+    assert(CalledF != nullptr);
+
     // function declaration is known, we can exploit
     // the argument indication to check for ModRefInfo
     bool mayRef = false;
-    for(auto &param : Call->args()){
-        auto val = node->aliasclass.find(param.get());
-        auto arg = CalledF->getArg(param.getOperandNo());
-        if(val != node->end()) {
-            if(! arg->onlyReadsMemory()) {
+
+    auto paramIt = Call->arg_begin();
+    auto argIt = CalledF->arg_begin();
+    while(paramIt != Call->arg_end() && argIt != CalledF->arg_end()){
+        auto *paramNode = AG.getNode(paramIt->get());
+        if(AG.checkNodeConnectivity(node, paramNode)) {
+            if(! argIt->onlyReadsMemory()) {
                 return ModRefInfo::ModRef;
             } else {
                 mayRef = true;
             }
         }
+        paramIt++;
+        argIt++;
     }
-    
+
     return mayRef ? ModRefInfo::Ref : ModRefInfo::NoModRef;
 }
 
