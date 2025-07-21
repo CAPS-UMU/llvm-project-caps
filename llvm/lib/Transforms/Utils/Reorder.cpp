@@ -39,6 +39,7 @@
  int globalWasted = 0;
  int globalReorder = 0;
  int globaldiffchainedgraphaa = 0;
+ int run_globaldiffcahinedgraphaa_call = 0;
  int globalAcrossCallReorder = 0;
  int globalAcrossCallWasted = 0;
  static cl::opt<bool> EnableSpeculativeReordering(
@@ -260,14 +261,14 @@ PreservedAnalyses ReorderPass::runonFunction(Function &F, ModuleAnalysisManager 
                 }
               }
               int Size = DL.getTypeStoreSize(ElemTyA);
-              int Dist = Val / Size;
+              int Dist = Val / 64; // 64 is the cache line size
               errs() << "Instructions val:" << Val << "\n";
               errs() << "Instructions Dist:" << Dist << "\n";
               MemoryLocation LocCurLoad = MemoryLocation::get(loadInst);
               MemoryLocation LocprevLoad = MemoryLocation::get(prevLoadInst);
               // errs() << "Instructions loc :" << LocCurLoad << " prev load loc :" << LocprevLoad << "\n";
               // if(AA.alias(LocCurLoad, LocprevLoad) != AliasResult:: NoAlias){
-              if(!((Val >= -64 && Val < 0) || (Val >= 0 && Val < 64))){
+              if(std::abs(Dist) >= 2){
                 errs() << "Instructions Alias curLoad: " << *loadInst << " prev load :" << *prevLoadInst << "\n";
                 currentInst = nullptr;
                 loadInst = nullptr;
@@ -320,12 +321,17 @@ PreservedAnalyses ReorderPass::runonFunction(Function &F, ModuleAnalysisManager 
                       distance++;
                       if(dyn_cast<CallInst>(*it)){
                         if(CallInst *callInst = dyn_cast<CallInst>(*it)){
+                            ModRefInfo DefMRI = AA.getModRefInfo(callInst, MemoryLocation::get(loadInst), SimpleAAQI);
+                                ModRefInfo BasicMRI = BasicAAR.getModRefInfo(callInst, MemoryLocation::get(loadInst), SimpleAAQI);
+                                ModRefInfo GraphMRI = GraphAAR.getModRefInfo(callInst, MemoryLocation::get(loadInst), SimpleAAQI);
+                                ModRefInfo GraphDefMRI = (GraphMRI == ModRefInfo::ModRef) ? DefMRI : GraphMRI;
+
                           errs() << "Call Inbetween" << "\n";
                           errs() << "Across call reordering enabled" << "\n";
-                          ModRefInfo CallAR = AA.getModRefInfo(callInst, MemoryLocation::get(loadInst));
+                          // ModRefInfo CallAR = AA.getModRefInfo(callInst, MemoryLocation::get(loadInst));
 
-                          if(callInst->mayHaveSideEffects() || CallAR == ModRefInfo::ModRef || CallAR == ModRefInfo::Ref) { //Keep both mod and ref
-                            assert((CallAR != ModRefInfo::NoModRef) && "CallInst should not have NoModRef");
+                          if(DefMRI == ModRefInfo::ModRef || DefMRI == ModRefInfo::Ref) { //Keep both mod and ref //callInst->mayHaveSideEffects() ||
+                            // assert((GraphDefMRI != ModRefInfo::NoModRef) && "CallInst should not have NoModRef");
                             if(callInst->mayHaveSideEffects()){
                               errs() << "Call may have side effects" << "\n";
                             }else {
@@ -343,6 +349,11 @@ PreservedAnalyses ReorderPass::runonFunction(Function &F, ModuleAnalysisManager 
                             break;
                           } else {
                             errs() << "Call does not modify or references memory" << "\n";
+                            if(DefMRI == ModRefInfo::ModRef || DefMRI == ModRefInfo::Ref || DefMRI == ModRefInfo::Mod){
+                              if(GraphDefMRI == ModRefInfo::NoModRef){
+                              run_globaldiffcahinedgraphaa_call++;
+                            }
+                          }
                           }
                         }
                         //break;
@@ -799,6 +810,7 @@ PreservedAnalyses ReorderPass::run(Module &M, ModuleAnalysisManager &AM) {
     errs() << "run_globalAcrossCallReorder: " << run_globalAcrossCallReorder << "\n";
     errs() << "run_globalAcrossCallWasted: " << run_globalAcrossCallWasted << "\n";
     errs() << "run_globaldiffchainedgraphaa: " << run_globaldiffchainedgraphaa << "\n";
+    errs() << "run_globaldiffcahinedgraphaa_call: " << run_globaldiffcahinedgraphaa_call << "\n";
     // Return preserved analyses
     return PreservedAnalyses::all();
 }

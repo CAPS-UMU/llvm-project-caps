@@ -14109,7 +14109,7 @@ static int Lastoffset2 = 0;
        continue;
        }     
 
-     }else if(LSNode2->getOpcode() == ISD::STORE){
+     }else if(LSNode2->getOpcode() == ISD::STORE || LSNode2->getOpcode() == ISD::LOAD){
        LLVM_DEBUG(dbgs() << "Node store value: "; LSNode2->dump(); dbgs() << "\n");
        int64_t Size =
            (MemVT == MVT::i64 || MemVT == MVT::f64) ? 8 :

@@ -140,16 +140,21 @@ PreservedAnalyses MarkROIPass::run(Function &F,
         IRBuilder<> Builder(Context);
 
         // Inline assembly strings for start and end
-        std::string StartAsm = "srai zero, zero, 0";
-        std::string EndAsm = "srai zero, zero, 1";
+        // std::string StartAsm = "srai zero, zero, 0";
+        // std::string EndAsm = "srai zero, zero, 1";
+        std::string StartTracingAsm = "sltiu zero, zero, 0x101";
+        std::string StartROIAsm = "sltiu zero, zero, 0x102";
+        std::string EndROIAsm = "sltiu zero, zero, 0x103";
 
         // Insert "srai zero, zero, 0" at the beginning of the function
         BasicBlock &EntryBlock = F.getEntryBlock();
         Builder.SetInsertPoint(&EntryBlock, EntryBlock.begin());
         FunctionType *VoidTy = FunctionType::get(Type::getVoidTy(Context), false);
-        InlineAsm *StartInlineAsm = InlineAsm::get(VoidTy, StartAsm, "", true);
+        InlineAsm *StartInlineAsm = InlineAsm::get(VoidTy, StartTracingAsm, "", true);
+        InlineAsm *StartROIInlineAsm = InlineAsm::get(VoidTy, StartROIAsm, "", true);
+        Builder.CreateCall(StartROIInlineAsm);
+        Builder.SetInsertPoint(&EntryBlock, EntryBlock.begin());
         Builder.CreateCall(StartInlineAsm);
-
         // Insert "srai zero, zero, 1" before every return instruction
         for (BasicBlock &BB : F) {
             for (Instruction &I : BB) {
@@ -157,7 +162,7 @@ PreservedAnalyses MarkROIPass::run(Function &F,
                 //Can't we use iterators to find the end of the function?
                 if (isa<ReturnInst>(&I) || isa<UnreachableInst>(&I)) {
                     Builder.SetInsertPoint(&I);
-                    InlineAsm *EndInlineAsm = InlineAsm::get(VoidTy, EndAsm, "", true);
+                    InlineAsm *EndInlineAsm = InlineAsm::get(VoidTy, EndROIAsm, "", true);
                     Builder.CreateCall(EndInlineAsm);
                 }
             }
