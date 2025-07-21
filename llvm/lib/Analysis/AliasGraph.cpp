@@ -1,16 +1,20 @@
 #include <cstddef>
 #include <cstdlib>
+#include <exception>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/LegacyPassManager.h>
+#include <stdexcept>
 #include <utility>
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Argument.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
 
@@ -25,6 +29,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ModRef.h"
 #include "llvm/Support/ScopedPrinter.h"
@@ -83,8 +88,139 @@ AliasGraph::AliasGraph(Module &M) {
 
 //Merge n1 into n2
 void AliasGraph::mergeNode(AliasNode* n1, AliasNode* n2){
+    
+#ifdef FIELD_SENSITIVITY
+    if(n1 == n2)    
+        return;
+    
+    for(auto it = n1->aliasclass.begin(); it != n1->aliasclass.end(); it++){
+        Value* v = *it;
+        n2->insert(v);
+        NodeMap[v] = n2;
+    }
+    n1->aliasclass.clear();
 
-    if(*n1 == *n2)    
+    //Then change edges
+    //Check n1 points to which node
+    //All point-to nodes should be merged
+    if(ToNodeMap.count(n1)){
+        auto n1_toNodeMap = ToNodeMap[n1];
+
+        //Both n1 and n2 have point to nodes
+        if(ToNodeMap.count(n2)){
+            auto n2_toNodeMap = ToNodeMap[n2];
+
+            for(auto n1_pair : n1_toNodeMap){
+                
+                int n1_edge = n1_pair.first;
+                AliasNode* n1_toNode= n1_pair.second;
+
+                //merge the same edge : n1_edge
+                if(n2_toNodeMap.count(n1_edge)){
+                    AliasNode* n2_toNode = n2_toNodeMap[n1_edge];
+                    if(n1_toNode == n2_toNode){
+                        //do nothing here
+                    }
+                    else{
+                        ToNodeMap[n1].erase(n1_edge);
+                        ToNodeMap[n2].erase(n1_edge);
+                        FromNodeMap[n1_toNode].erase(n1_edge);
+                        FromNodeMap[n2_toNode].erase(n1_edge);
+                        mergeNode(n1_toNode, n2_toNode);
+                        ToNodeMap[n2][n1_edge] = n2_toNode;
+                        FromNodeMap[n2_toNode][n1_edge].insert(n2);
+                    }
+                }
+                //n1 has, but n2 has no such edge, merge the edge
+                else{
+                    ToNodeMap[n1].erase(n1_edge);
+                    ToNodeMap[n2][n1_edge] = n1_toNode;
+                    FromNodeMap[n1_toNode][n1_edge].insert(n2);
+                }
+            }
+        }
+
+        //n2 has no pointed node
+        else{
+            ToNodeMap.erase(n1);
+            ToNodeMap[n2] = n1_toNodeMap;
+            for(auto n: n1_toNodeMap){
+                FromNodeMap[n.second][n.first].erase(n1);
+                FromNodeMap[n.second][n.first].insert(n2);
+            }
+        }
+    }
+
+    //Check which node points to n1
+    //For previous node, only merge * edge
+    if(FromNodeMap.count(n1)){
+        auto n1_fromNodeMap = FromNodeMap[n1];
+
+        //Both n1 and n2 have previous(from) nodes
+        if(FromNodeMap.count(n2)){
+            auto n2_fromNodeMap = FromNodeMap[n2];
+
+            for(auto n1_pair : n1_fromNodeMap){
+
+                int n1_edge = n1_pair.first;
+                set<AliasNode*> n1_fromNodeSet = n1_pair.second;
+                if(n1_edge == -1){
+
+                    if(n1_fromNodeSet.size() != 1){
+                        //OP<<"WARNING IN NODE MERGE 1!!!\n";
+                    }
+                    AliasNode* n1_fromNode = *n1_fromNodeSet.begin();
+
+                    //merge the same edge : * edge
+                    if(n2_fromNodeMap.count(n1_edge)){
+                        set<AliasNode*> n2_fromNodeSet = n2_fromNodeMap[n1_edge];
+                        if(n2_fromNodeSet.size() != 1){
+                            //OP<<"WARNING IN NODE MERGE 2!!!"<<n2_fromNodeSet.size()<<"\n";
+                        }
+                         
+                        AliasNode* n2_fromNode = *n2_fromNodeSet.begin();
+                        if(n1_fromNode == n2_fromNode){
+                            //do nothing here
+                        }
+                        else{
+                            FromNodeMap[n1].erase(n1_edge);
+                            FromNodeMap[n2].erase(n1_edge);
+                            ToNodeMap[n1_fromNode].erase(n1_edge);
+                            ToNodeMap[n2_fromNode].erase(n1_edge);
+                            mergeNode(n1_fromNode, n2_fromNode);
+                            FromNodeMap[n2][n1_edge].insert(n2_fromNode);
+                            ToNodeMap[n2_fromNode][n1_edge] = n2;
+                        }
+                    }
+                    //n1 has, but n2 has no such edge, merge the edge
+                    else{
+                        FromNodeMap[n1].erase(n1_edge);
+                        FromNodeMap[n2][n1_edge].insert(n1_fromNode);
+                        ToNodeMap[n1_fromNode][n1_edge] = n2;
+                    }
+                }
+                //The previous edge is not *, just add them to the graph
+                else{
+                    for(AliasNode* n1_fromNode : n1_fromNodeSet){
+                        FromNodeMap[n1].erase(n1_edge);
+                        FromNodeMap[n2][n1_edge].insert(n1_fromNode);
+                        ToNodeMap[n1_fromNode][n1_edge] = n2;
+                    }
+                }
+            }
+        }
+
+        //n2 has no pre node
+        else{
+            FromNodeMap.erase(n1);
+            FromNodeMap[n2] = n1_fromNodeMap;
+            for(auto m: n1_fromNodeMap)
+                for(auto n: m.second)
+                    ToNodeMap[n][m.first] = n2;
+        }
+    }
+#else
+    if(n1 == n2)    
         return;
 
     //First merge node values
@@ -143,6 +279,7 @@ void AliasGraph::mergeNode(AliasNode* n1, AliasNode* n2){
             this->ToNodeMap[n1_fromNode] = n2;
         }
     }
+#endif //
 }
 
 AliasNode * AliasGraph::getNode(Value *V){
@@ -172,6 +309,9 @@ AliasNode * AliasGraph::getNode(const MemoryLocation &MemLoc){
 // From the alias node matching the given memory location,
 // gets the node's "origin" (i.e its parent without parent) in the graph
 AliasNode * AliasGraph::retraceOrigin(const MemoryLocation &MemLoc) {
+#ifdef FIELD_SENSITIVITY
+    assert(false && "TODO : Implement retrace origin function for field sensitive alias graph.");
+#else
     AliasNode * node = this->getNode(MemLoc);
     if(node == nullptr) return nullptr;
 
@@ -184,6 +324,7 @@ AliasNode * AliasGraph::retraceOrigin(const MemoryLocation &MemLoc) {
 
     if (parent == nullptr) return node;
     return parent;
+#endif // FIELD_SENSITIVITY
 }
 
 // Return a partition of the alias class over the function
@@ -231,9 +372,48 @@ unsigned getMin(unsigned n1, unsigned n2){
         return n2;
 }
 
-
+// Checking if their is a dereferencing chain between two nodes
 bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
+#ifdef FIELD_SENSITIVITY
+    if(!node1 || !node2)
+        return false;
 
+    list<AliasNode *>LN;
+    LN.push_back(node1);
+    set<AliasNode *> PN; //Global value set to avoid loop
+    PN.clear();
+
+    while (!LN.empty()) {
+        AliasNode *CN = LN.front();
+        LN.pop_front();
+
+        if (PN.find(CN) != PN.end()){
+            continue;
+        }
+        PN.insert(CN);
+
+        if(CN == node2)
+            return true;
+
+        if(ToNodeMap.count(CN)){
+            for(auto n : ToNodeMap[CN]){
+                if(n.first == -1)
+                    LN.push_back(n.second);
+            }
+        }
+
+        if(FromNodeMap.count(CN)){
+            for(auto m : FromNodeMap[CN]){
+                if(m.first == -1){
+                    for(auto n : m.second)
+                        LN.push_back(n);
+                }
+            }
+        }
+    }
+
+    return false;
+#else
     if(!node1 || !node2)
         return false;
 
@@ -270,24 +450,37 @@ bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
 	}
 
     return false;
+#endif //FIELD_SENSITIVITY
 }
 
 /// INTERPROCEDURAL ALIAS ANALYSIS
 int instrCount = 0; // for debug only
-void AliasGraph::analyzeFunction(Function* F){
-    if(!F || F->getIntrinsicID() != Intrinsic::not_intrinsic) return;
+
+SetVector<ReturnInst*> AliasGraph::analyzeFunction(Function* F){
+    SetVector<ReturnInst*> RetSites;
+    
+    if(!F || F->getName().starts_with("llvm.lifetime")) 
+        return RetSites;
 
     //testing what happens if a function is analyzed several times
     LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << "\n"); 
 
     for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
-      Instruction *iInst = dyn_cast<Instruction>(&(*i));
-      this->HandleInst(iInst);
-
+        if(
+            auto * RI = dyn_cast<ReturnInst>(&(*i));
+            RI && RI->getReturnValue()
+        ) {
+            RetSites.insert(RI);
+        } else {
+            Instruction *iInst = dyn_cast<Instruction>(&(*i));
+            this->HandleInst(iInst);
+        }
 #ifdef AAGRAPH_BUILD_FRAMES
       writeToDot("../aliasgraph"+itostr(instrCount++)+".dot");
 #endif // AAGRAPH_BUILD_FRAMES
     }
+
+    return RetSites;
 }
 
 /// INSTRUCTION HANDLER
@@ -357,7 +550,7 @@ void AliasGraph::HandleInst(Instruction* I){
         return;
     }
 
-    GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(I);
+    auto *GEP = dyn_cast<GEPOperator>(I);
     if(GEP){
         this->HandleGEP(GEP);
         return;
@@ -425,12 +618,12 @@ void AliasGraph::HandleAlloc(AllocaInst* ALI){
 
 // v1 = *v2
 void AliasGraph::HandleLoad(LoadInst* LI){
-    
+        
     AliasNode* node1 = getNode(LI);
     if(node1 == nullptr){
         node1 = new AliasNode();
         node1->insert(LI);
-        this->NodeMap[LI] = node1;
+        NodeMap[LI] = node1;
     }
 
     Value* op = LI->getOperand(0);
@@ -438,9 +631,38 @@ void AliasGraph::HandleLoad(LoadInst* LI){
     if(node2 == nullptr){
         node2 = new AliasNode();
         node2->insert(op);
-        this->NodeMap[op] = node2;
+        NodeMap[op] = node2;
     }
 
+#ifdef FIELD_SENSITIVITY
+    //node2 has pointed to some nodes
+    if(ToNodeMap.count(node2)){
+
+        auto node2_toNodeMap = ToNodeMap[node2];
+        if(node2_toNodeMap.count(-1)){
+            mergeNode(node1 ,node2_toNodeMap[-1]);
+            goto end;
+        }
+    }
+    //For load, this usually does not happen
+    if(FromNodeMap.count(node1)){
+
+        auto node1_fromNodeMap = FromNodeMap[node1];
+        if(node1_fromNodeMap.count(-1)){
+            if(node1_fromNodeMap[-1].size() != 1){
+                //OP<<"WARNING IN NODE MERGE 3!!!\n";
+            }
+            mergeNode(*node1_fromNodeMap[-1].begin(), node2);
+            goto end;
+        }
+    }
+
+    ToNodeMap[node2][-1] = node1;
+    FromNodeMap[node1][-1].insert(node2);
+
+end:
+    return;
+#else
     //node2 has pointed to some nodes
     if(this->ToNodeMap.count(node2)){
         AliasNode* node2_toNode = this->ToNodeMap[node2];
@@ -455,6 +677,7 @@ void AliasGraph::HandleLoad(LoadInst* LI){
         this->ToNodeMap[node2] = node1;
         this->FromNodeMap[node1] = node2;
     }
+#endif //FIELD_SENSITIVITY
 }
 
 // *v2 = v1
@@ -464,6 +687,13 @@ void AliasGraph::HandleStore(StoreInst* STI){
     Value* vop = STI->getValueOperand(); //v1
     Value* pop = STI->getPointerOperand(); //v2
 
+    AliasNode* node2 = getNode(pop);
+    if(node2 == nullptr){
+        node2 = new AliasNode();
+        node2->insert(pop);
+        NodeMap[pop] = node2;
+    }
+
     if(isa<ConstantData>(vop))
         return;
 
@@ -471,14 +701,7 @@ void AliasGraph::HandleStore(StoreInst* STI){
     if(node1 == nullptr){
         node1 = new AliasNode();
         node1->insert(vop);
-        this->NodeMap[vop] = node1;
-    }
-
-    AliasNode* node2 = getNode(pop);
-    if(node2 == nullptr){
-        node2 = new AliasNode();
-        node2->insert(pop);
-        this->NodeMap[pop] = node2;
+        NodeMap[vop] = node1;
     }
 
     //Under test
@@ -486,6 +709,33 @@ void AliasGraph::HandleStore(StoreInst* STI){
         return;
     }
 
+#ifdef FIELD_SENSITIVITY
+    //node2 has pointed to some nodes
+    if(ToNodeMap.count(node2)){
+        auto node2_toNodeMap = ToNodeMap[node2];
+        if(node2_toNodeMap.count(-1)){
+            mergeNode(node1 ,node2_toNodeMap[-1]);
+            goto end;
+        }
+    }
+
+    if(FromNodeMap.count(node1)){
+        auto node1_fromNodeMap = FromNodeMap[node1];
+        if(node1_fromNodeMap.count(-1)){
+            if(node1_fromNodeMap[-1].size() != 1){
+                //OP<<"WARNING IN NODE MERGE 4!!!" << node1_fromNodeMap[-1].size() <<"\n";;
+            }
+            mergeNode(*node1_fromNodeMap[-1].begin(), node2);
+            goto end;
+        }
+    }
+
+    ToNodeMap[node2][-1] = node1;
+    FromNodeMap[node1][-1].insert(node2);
+
+end:
+    return;
+#else
     //node2 has pointed to some nodes
     if(this->ToNodeMap.count(node2)){
         AliasNode* node2_toNode = this->ToNodeMap[node2];
@@ -499,18 +749,117 @@ void AliasGraph::HandleStore(StoreInst* STI){
         this->ToNodeMap[node2] = node1;
         this->FromNodeMap[node1] = node2;
     }
+#endif // FIELD_SENSITIVITY
 }
 
-// v1 = &v2->f
-void AliasGraph::HandleGEP(GetElementPtrInst* GEP){
-    // TODO : make it field sensitive
-    this->HandleMove(GEP, GEP->getPointerOperand());
+#ifdef FIELD_SENSITIVITY
+
+bool checkValidStructName(Type *Ty){
+    if( ! Ty->isStructTy())
+        return false;
+
+    StructType* STy = dyn_cast<StructType>(Ty);
+    if(STy->isLiteral())
+        return false;
+
+    auto TyName = Ty->getStructName();
+    return  ! (
+        TyName.contains(".union") ||
+        TyName.contains(".anon")
+    );
 }
+
+//Return true if we successfully find the layered type
+bool getGEPLayerIndex(GEPOperator *GEP, int &Index) {
+
+    Type *PTy = GEP->getPointerOperand()->getType();
+    if(!PTy->isPointerTy())
+        return false;
+
+    Type *Ty = GEP->getSourceElementType(); // check if this works; previous : PTy->getPointerElementType();
+    
+    int Idx;
+
+    //Expect the PointerOperand is an identified struct
+    if (Ty->isStructTy() && GEP->hasAllConstantIndices()) {
+        User::op_iterator ie = GEP->idx_end();
+        ConstantInt *ConstI = dyn_cast<ConstantInt>((--ie)->get());
+        Idx = ConstI->getSExtValue(); //Idx is the last indice
+        
+        if(Idx < 0 || !checkValidStructName(Ty))
+            return false;
+
+        unsigned indice_num = GEP->getNumIndices();
+
+        //Filter GEP that has invalid indice
+        ConstantInt *ConstI_first = dyn_cast<ConstantInt>(GEP->idx_begin()->get());
+        int Idx_first = ConstI_first->getSExtValue();
+        if((Idx_first != 0 && Ty->isStructTy())
+            || indice_num < 2){
+            return false;
+        }
+
+        Index = Idx;
+        return true;
+    }
+    
+    if(Ty->isStructTy() || Ty->isArrayTy()){
+        Index = 999;
+        return true;
+    }
+
+    return false;
+    
+}
+#endif // FIELD_SENSITIVITY 
 
 // v1 = &v2->f
 void AliasGraph::HandleGEP(GEPOperator* GEP){
     // TODO : make it field sensitive
+#ifndef FIELD_SENSITIVITY
     this->HandleMove(GEP, GEP->getPointerOperand());
+#else
+        int idx = 0;
+    if(getGEPLayerIndex(GEP, idx)){
+        Value* v2 = GEP->getPointerOperand();
+        Value* v1 = GEP;
+
+        AliasNode* node2 = getNode(v2);
+        if(node2 == nullptr){
+            node2 = new AliasNode();
+            node2->insert(v2);
+            NodeMap[v2] = node2;
+        }
+
+        AliasNode* node1 = getNode(v1);
+        if(node1 == nullptr){
+            node1 = new AliasNode();
+            node1->insert(v1);
+            NodeMap[v1] = node1;
+        }
+
+        //node2 has pointed to some nodes
+        if(ToNodeMap.count(node2)){
+            auto node2_toNodeMap = ToNodeMap[node2];
+            if(node2_toNodeMap.count(idx)){
+                mergeNode(node1 ,node2_toNodeMap[idx]);
+                goto end;
+            }
+        }
+
+        ToNodeMap[node2][idx] = node1;
+        FromNodeMap[node1][idx].insert(node2);
+
+    }
+    else{
+        //Use move may not suitable here
+        HandleMove(GEP, GEP->getPointerOperand());
+    }
+
+end:
+    return;
+#endif // FIELD_SENSITIVITY
+
 }
 
 // v1 = v2
@@ -555,10 +904,18 @@ void AliasGraph::HandleCai(CallInst *CAI) {
 
     auto calledFunc = CAI->getCalledFunction();
     if( calledFunc == nullptr ||
-        calledFunc->getIntrinsicID() != Intrinsic::not_intrinsic) 
+        calledFunc->getName().starts_with("llvm.lifetime")) 
         // ignoring indirect call and function for lifetime of static alloc object
-        return;  
+        return;
 
+    // Test handling of memory copy instruction
+    if(calledFunc->getName().contains("memcpy")
+        || calledFunc->getName().contains("memmove")) {
+        HandleMove(CAI->getArgOperand(0), CAI->getArgOperand(1));
+        return;
+    }
+
+    // Moving the parameter of the call to the argument of the function
     auto argCallIt = CAI->arg_begin();
     auto funcArgIt = calledFunc->arg_begin();
     while (argCallIt != CAI->arg_end() && funcArgIt != calledFunc->arg_end()) {
@@ -568,7 +925,6 @@ void AliasGraph::HandleCai(CallInst *CAI) {
             this->NodeMap[*argCallIt] = node;
         }
 
-        // Moving the parameter of the call to the argument of the function
         this->HandleMove(funcArgIt, *argCallIt);
         funcArgIt++;
         argCallIt++;
@@ -585,17 +941,13 @@ void AliasGraph::HandleCai(CallInst *CAI) {
         } else {
             entry->second.insert(CAI);
         }
-        analyzeFunction(calledFunc);
+
+        auto RetInst = analyzeFunction(calledFunc);
+        // handling aliasing with the return values of the function called
+        for(auto *RI : RetInst) {
+            HandleMove(RI->getReturnValue(), CAI);
+        }
     }
-
-}
-
-// v = f(...)
-void AliasGraph::HandleReturn(Function* F, CallInst* cai){
-    for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i)
-        if(ReturnInst *returnStatement = dyn_cast<ReturnInst>(&*i))
-            if(Value* returnValue = returnStatement->getReturnValue())
-                this->HandleMove(returnValue, cai);
 }
 
 //===----------------------------------------------------------------------===//
@@ -623,19 +975,30 @@ void AliasGraph::writeToDot(std::string Filename) {
   } \
 } while(false)
 
-  for(auto [_, node] : NodeMap) {
-    WRITE_IFNOT_WRITTEN(node);
-  }
+    for(auto [_, node] : NodeMap) {
+      WRITE_IFNOT_WRITTEN(node);
+    }
 
-  for(auto [n1, n2] : ToNodeMap) {
-    WRITE_IFNOT_WRITTEN(n1);
-    WRITE_IFNOT_WRITTEN(n2);
-    File << writtenNodes[n1] << " -> " << writtenNodes[n2] << " ; \n";
-  }
+#ifdef FIELD_SENSITIVITY  
+    for(auto [n1, children] : ToNodeMap) {
+        WRITE_IFNOT_WRITTEN(n1);
+        for(auto [idx, node] : children) {
+            WRITE_IFNOT_WRITTEN(node);
+            File << writtenNodes[n1] << " -> " << writtenNodes[node]
+                 << " [label=\"" << idx << "\"]; \n";
+        }
+    }
+#else
+    for(auto [n1, n2] : ToNodeMap) {
+      WRITE_IFNOT_WRITTEN(n1);
+      WRITE_IFNOT_WRITTEN(n2);
+      File << writtenNodes[n1] << " -> " << writtenNodes[n2] << " ; \n";
+    }
+#endif // FIELD_SENSITIVITY
 #undef WRITE_IFNOT_WRITTEN
 
-  File << "}\n";
-  File.close();
+    File << "}\n";
+    File.close();
 }
 
 //===----------------------------------------------------------------------===//
@@ -695,11 +1058,31 @@ AliasResult GraphAAResult::alias(const MemoryLocation &LocA, const MemoryLocatio
 ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
                          AAQueryInfo &AAQI) {
     AliasNode * node = AG.getNode(Loc);
-    assert(node != nullptr && "In mod ref of graph aa, a memory location wasn't registered in the graph.");
+    if(node == nullptr) {
+        AG.dbg_msg = "\033[31m"+to_string(*Loc.Ptr)+" : has no node in aa graph, can't proceed with getModRef.\033[0m\n";
+    }
+    assert(node != nullptr);
+
+    // check for aliasing with the return value
+    if (Call->isReturnNonNull()) {
+        AliasNode * retNode = AG.getNode(const_cast<CallBase*>(Call));
+
+        if(!retNode) {
+            AG.dbg_msg = to_string(*Call) + " not registered in a-graph.";
+        }
+        assert(retNode);
+
+        if(AG.checkNodeConnectivity(node, retNode))
+            return ModRefInfo::ModRef;
+    }
 
     // indirect call, can only say there is no mod ref if
     // the parameter don't alias with the given memory location
     if(Call->isIndirectCall()) {
+        AliasNode * funPtrNode = AG.getNode(Call->getCalledOperand());
+        if(AG.checkNodeConnectivity(node, funPtrNode))
+            return ModRefInfo::ModRef;
+
         for(auto &param : Call->args()) {
             auto *paramNode = AG.getNode(param.get());
             if(AG.checkNodeConnectivity(node, paramNode))
@@ -713,6 +1096,12 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
     Function * CalledF = Call->getCalledFunction();
     assert(CalledF != nullptr);
 
+    // the called function is known, we can access
+    // information about its memory effect
+    MemoryEffects ME = CalledF->getMemoryEffects();
+    if(ME.doesNotAccessMemory() || ! ME.doesAccessArgPointees())
+        return ModRefInfo::NoModRef;
+
     // function declaration is known, we can exploit
     // the argument indication to check for ModRefInfo
     bool mayRef = false;
@@ -722,10 +1111,10 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
     while(paramIt != Call->arg_end() && argIt != CalledF->arg_end()){
         auto *paramNode = AG.getNode(paramIt->get());
         if(AG.checkNodeConnectivity(node, paramNode)) {
-            if(! argIt->onlyReadsMemory()) {
-                return ModRefInfo::ModRef;
-            } else {
+            if(argIt->onlyReadsMemory()) {
                 mayRef = true;
+            } else {
+                return ModRefInfo::ModRef;
             }
         }
         paramIt++;

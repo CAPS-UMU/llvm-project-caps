@@ -30,6 +30,7 @@
 #include "llvm/Support/ModRef.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cassert>
 #include <vector>
 
 using namespace llvm;
@@ -131,8 +132,8 @@ SetVector<Value*> getPointers(const Function &F) {
 
 // Get the memory manipulating instruction from the IR
 struct MemInstSets AliasTestPass::getMemInstr(Function &F) {
-  SetVector<LoadInst *>   Loads;
-  SetVector<StoreInst *>  Stores;
+  SetVector<Instruction *>   Loads;
+  SetVector<Instruction *>  Stores;
   SetVector<AllocaInst *> Allocs;
   SetVector<CallInst *>   Calls;
 
@@ -245,8 +246,12 @@ AliasResult AliasTestPass::aliasInterp(const Value * V1, const Value * V2, Alias
   return defaultAA.alias(Arg, calledVal);
 }
 
+#ifndef FIELD_SENSITIVITY
 // Check if the origin nodes of the 2 memory location don't alias in the alias graph, according
-// to the given alias analysis object.
+// to the given alias analysis object, is used for test to compare the alias graph AA result
+// with the default pipeline result.
+// Currently only working with the field insensitive alias graph, you need to comment the 
+// macro for field sensitivity in the "AliasGraph.h" file to use this function
 AliasResult AliasTestPass::tryAliasOrigin(const MemoryLocation &LocA, const MemoryLocation &LocB, 
                                   AliasGraph &graph, AliasAnalysis &AA) {
   AliasNode * node1 = graph.retraceOrigin(LocA);
@@ -282,6 +287,66 @@ AliasResult AliasTestPass::tryAliasOrigin(const MemoryLocation &LocA, const Memo
   
   return (may > no) ? AliasResult::MayAlias : AliasResult::NoAlias;
 }
+#endif // FIELD_SENSITIVITY
+
+// Compare the given set of memory instruction with 
+// a set of call instruction using modref info
+std::string compareWithCall(SetVector<Instruction*> ISet, SetVector<CallInst*> CallSet,
+                    AliasAnalysis &AA, GraphAAResult &GraphAAR, AAQueryInfo &AAQI,
+                  int &betRes, int &totalReq) {
+  betRes = 0;
+  totalReq = 0;
+  std::string stats = "";
+
+  for (auto *MemInst : ISet) {
+
+    bool correctInst = (isa<LoadInst>(MemInst) || isa<StoreInst>(MemInst));
+    if(!correctInst)
+      errs() << *MemInst << " don't have a mem loc.\n";
+    assert(correctInst);
+
+    auto MemLoc = MemoryLocation::get(MemInst);  
+
+    for (auto *Call : CallSet){
+      //if (auto * called = Call->getCalledFunction()) {
+      //    errs() << "\033[30m\n";
+      //    errs() << "Function : " << called->getName();
+      //    bool memacc = called->getMemoryEffects().doesNotAccessMemory();
+      //    bool memargacc = called->getMemoryEffects().doesAccessArgPointees();  
+      //    if(! memacc)
+      //      errs() << " does access memory ; ";
+      //  
+      //    if (memargacc)
+      //      errs() << " access memory through pointer arg ; ";
+      //    
+      //    if(memacc && !memargacc)
+      //      errs() << " does not access memory.";
+      //    errs() << "\033[0m\n";
+      //}
+
+      ModRefInfo MRIAA = AA.getModRefInfo(MemInst, Call); 
+      ModRefInfo MRIGraphAA = GraphAAR.getModRefInfo(Call, MemLoc, AAQI);  
+
+      if(! GraphAAR.getGraph().dbg_msg.empty()) { 
+        errs() << GraphAAR.getGraph().dbg_msg << "\n"; 
+        errs() << "\033[31m On instruction : " << *MemInst << "\033[0m\n";   
+        assert(false && "Error on mod ref."); 
+      }  
+
+      if(MRIGraphAA < MRIAA)
+        stats += "\n"+to_string(betRes++)+" : "+to_string(*Call)+" : "+to_string(MRIAA)
+                 +" ~ "+to_string(MRIGraphAA)+" : "+to_string(*MemInst)+"\n"; 
+
+      totalReq++;
+      assert( 
+        (MRIGraphAA != ModRefInfo::NoModRef || !(MRIAA == ModRefInfo::Mod || MRIAA == ModRefInfo::Ref)) 
+        && "Contradiction in mod ref result : nomodref & mod/ref have been found." 
+      ); 
+    }
+  }
+
+  return stats;
+}
 
 // execute the alias analysis on a function and display different result
 // according to what macro is enabled/defined
@@ -306,9 +371,11 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
   //for (Value *Store : Sets.Stores) errs() << *Store << "\n";
   //for (Value *Call : Sets.Calls) errs() << *Call << "\n";
 
-#ifdef COMPARE_RESULT
+  //COMPARE_RESULT
   int betterResult = 0;
-#endif //COMPARE_RESULT
+  int totalRequest = 0;
+
+  errs() << "ANALYZIS ON FUNCTION " << F.getName() << " ---------------------------\n";
 
 #ifdef QUERY_STATS
   // declaring counts for differents answers of alias analysis
@@ -323,23 +390,25 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
   int countNoModRef = 0;
 #endif // QUERY_STATS
 
-  int totalRequest = 0;
-  for (auto *Load : Sets.Loads) {
-     MemoryLocation LoadLoc = MemoryLocation::get(Load);
-
-  errs() << "ANALYZIS ON FUNCTION " << F.getName() << " ---------------------------\n";
-
 #ifdef CALL_MODREF
-    for (auto *Call : Sets.Calls){
-      ModRefInfo MRIAA = AA.getModRefInfo(Load, Call);
-      ModRefInfo MRIGraphAA = GraphAAR.getModRefInfo(Call, LoadLoc, SimpleAAQI);
+  int tl = 0;
+  int ts = 0;
+  int bl = 0;
+  int bs = 0;
 
-      if(auto caller = Call->getCalledFunction();
-         caller && ! caller->getName().consume_front("llvm.lifetime"))
-        errs() << *Call << " : " << MRIAA << " ~ " << MRIGraphAA << " : " << *Load << "\n";
-    }
+  std::string statsLoad = compareWithCall(Sets.Loads, Sets.Calls, AA, GraphAAR, SimpleAAQI, bl, tl);
+  std::string statsStore = compareWithCall(Sets.Stores, Sets.Calls, AA, GraphAAR, SimpleAAQI, bs, ts);
+  
+  //if(bl > 0)
+  //  errs() << statsLoad;
+  //if(bs > 0)
+  //  errs() << statsStore;
 
+  if(bs > 0 || bl > 0)
+    errs() << "\033[31mBetter result : " << bl << " / " << tl << " load/call ; " << bs << " / " << ts << " store/call ; \033[0m\n";
 #else
+  for (auto *Load : Sets.Loads) {
+    MemoryLocation LoadLoc = MemoryLocation::get(Load);
     for (auto *Store : Sets.Stores) {
       MemoryLocation StoreLoc = MemoryLocation::get(Store);
     
@@ -381,8 +450,8 @@ void AliasTestPass::iterateOnFunction(Function &F, FunctionAnalysisManager &FAM,
 #endif // QUERY_STATS
 #endif // TEST_MODREF
     }
-#endif // CALL_MODREF
   }
+#endif // CALL_MODREF
 
 #ifdef COMPARE_RESULT
   errs() << "GraphAA result that are better than default AA result :  " << betterResult << "\n"
@@ -423,17 +492,17 @@ void pairEvaluate(Function &F, ModuleAnalysisManager &MAM,
          << "// *************************************************************************** //\n";
   for(auto * ptr1 : Ptrs) {
     for(auto * ptr2 : Ptrs) {
-      AliasResult GrAR = GraphAAR.alias(
-          MemoryLocation(ptr1, LocationSize::beforeOrAfterPointer()), 
-          MemoryLocation(ptr2, LocationSize::beforeOrAfterPointer()), 
-          SimpleAAQI, nullptr);
-      AliasResult DefAR = AA.alias(ptr1, ptr2);
+      auto size = LocationSize::precise(1);
+      auto LocA = MemoryLocation(ptr1, size); 
+      auto LocB = MemoryLocation(ptr2, size);
+      AliasResult GrAR = GraphAAR.alias(LocA, LocB, SimpleAAQI, nullptr);
+      AliasResult DefAR = AA.alias(LocA, LocB);
 
       assert(
         ((GrAR != AliasResult::NoAlias) || (DefAR != AliasResult::MustAlias && DefAR != AliasResult::PartialAlias))
         && "Contradiction in results between graph-aa and default-aa-pipeline."
       );
-      AliasResult AAR = (GrAR == AliasResult::NoAlias) ? GrAR : DefAR;
+      AliasResult AAR = /* (GrAR == AliasResult::NoAlias) ? GrAR : */ DefAR;
 
       errs() << "alias ( " << *ptr1 << ", \n"
              << "        " << *ptr2 << ") = \033[32m" << AAR << "\033[0m;\n"
@@ -446,7 +515,8 @@ void pairEvaluate(Function &F, ModuleAnalysisManager &MAM,
 //////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////
 #define PRINT_STAT(aa_name, counts, isModRef) do { \
-    errs() << "Result of " << aa_name << " query on loads and store : \n" \
+    errs() << "Result of " << aa_name << " query on loads and " \
+        << (isModRef ? "calls" : "store") << " :\n" \
         << "Total query performed : " << counts[4] << "\n" \
         << (isModRef ? "NoModRef : " : "NoAlias : ") << counts[0] \
         << (isModRef ? "; Ref : " :"; MayAlias : ") << counts[1]  \
@@ -458,8 +528,7 @@ void pairEvaluate(Function &F, ModuleAnalysisManager &MAM,
              << (isModRef ? "nomodref=" : "no=") << PROP(counts[0], counts[4]) << "%/"  \
              << (isModRef ? "ref=" : "may=") << PROP(counts[1], counts[4]) << "%/" \
              << (isModRef ? "mod=" : "part=") << PROP(counts[2], counts[4]) << "%/" \
-             << (isModRef ? "modref=" : "must=") << PROP(counts[3], counts[4]) << "%\n" \
-             << " // -------------------------------------------------- //\n"; \
+             << (isModRef ? "modref=" : "must=") << PROP(counts[3], counts[4]) << "%\n\n"; \
     } \
 } while(false)
 
@@ -522,17 +591,31 @@ void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM,
     }
   }
 
-  errs() << "In function : \033[31m" << F.getName() << "\033[0m \n";
-  PRINT_STAT("\033[32mDEFAULT AA PIPELINE\033[0m", defaultAlias, false);
-  PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphAlias, false);
-  PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicAlias, false);
-  PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefAlias, false);
-  errs() << "//********************************************************************//\n\n";
-  PRINT_STAT("\033[32mDEFAULT AA PIPELINE\033[0m", defaultModRef, true);
-  PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphModRef, true);
-  PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicModRef, true);
-  PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefModRef, true);
-  errs() << "//====================================================================//\n\n";
+  bool betterAlias = (defaultAlias[0] < graphDefAlias[0]); 
+  bool betterModRef = (defaultModRef[0] < graphDefModRef[0]);
+
+  if(betterAlias || betterModRef)
+    errs() << "In function : \033[31m" << F.getName() << "\033[0m \n";
+
+  if(betterAlias) {
+    PRINT_STAT("\033[32mDEFAULT AA PIPELINE\033[0m", defaultAlias, false);
+    PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphAlias, false);
+    PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicAlias, false);
+    PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefAlias, false);
+  }
+
+  if (betterAlias && betterModRef)
+    errs() << "/---------------------------------------------------------------------/\n\n";
+
+  if(betterModRef) {
+    PRINT_STAT("\033[32mDEFAULT AA PIPELINE\033[0m", defaultModRef, true);
+    PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphModRef, true);
+    PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicModRef, true);
+    PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefModRef, true);
+  }
+
+  if(betterAlias || betterModRef)
+    errs() << "//====================================================================//\n\n";
 }
 
 // ---------------------------------------------
@@ -541,9 +624,9 @@ PreservedAnalyses AliasTestPass::run(Module &M,
   FunctionAnalysisManager &FAM =
         AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   
-  /* Triple ModuleTriple(M.getTargetTriple());
-  auto * TLII = new TargetLibraryInfoImpl(ModuleTriple);
-  auto * TLI = new TargetLibraryInfo(*TLII); */
+  errs() << "\n///////////////////////////////////////////////////////////////\n"
+         << M.getName() << "\n"
+         << "\n///////////////////////////////////////////////////////////////\n";
 
   std::vector<unsigned int> counts (5, 0);
   for(auto &F : M) {
