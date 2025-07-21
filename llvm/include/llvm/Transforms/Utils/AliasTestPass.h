@@ -26,8 +26,8 @@
 namespace llvm {
 
 struct MemInstSets {
-  SetVector<LoadInst *> Loads;
-  SetVector<StoreInst *> Stores;
+  SetVector<Instruction *> Loads;
+  SetVector<Instruction *> Stores;
   SetVector<AllocaInst *> Allocs;
   SetVector<CallInst *> Calls;
 
