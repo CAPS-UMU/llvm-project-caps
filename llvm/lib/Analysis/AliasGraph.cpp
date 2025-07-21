@@ -29,6 +29,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ModRef.h"
 #include "llvm/Support/ScopedPrinter.h"
@@ -1057,24 +1058,20 @@ AliasResult GraphAAResult::alias(const MemoryLocation &LocA, const MemoryLocatio
 ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
                          AAQueryInfo &AAQI) {
     AliasNode * node = AG.getNode(Loc);
-
-    
-
-    auto * F = Call->getFunction();
-    if(! AG.AnalyzedFuncSet.contains(F)) {
-        AG.dbg_msg = "\033[31m"+F->getName().str()+" : was not analyzed in aa graph, can't proceed with getModRef.\033[0m\n";
-        return ModRefInfo::ModRef;
-    }
-
     if(node == nullptr) {
         AG.dbg_msg = "\033[31m"+to_string(*Loc.Ptr)+" : has no node in aa graph, can't proceed with getModRef.\033[0m\n";
-        return ModRefInfo::ModRef; 
     }
+    assert(node != nullptr);
 
     // check for aliasing with the return value
-    if (! Call->doesNotReturn()) {
+    if (Call->isReturnNonNull()) {
         AliasNode * retNode = AG.getNode(const_cast<CallBase*>(Call));
-        assert(retNode && "In mod ref of graph aa, retval memloc not in a-graph.");
+
+        if(!retNode) {
+            AG.dbg_msg = to_string(*Call) + " not registered in a-graph.";
+        }
+        assert(retNode);
+
         if(AG.checkNodeConnectivity(node, retNode))
             return ModRefInfo::ModRef;
     }
@@ -1082,6 +1079,10 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
     // indirect call, can only say there is no mod ref if
     // the parameter don't alias with the given memory location
     if(Call->isIndirectCall()) {
+        AliasNode * funPtrNode = AG.getNode(Call->getCalledOperand());
+        if(AG.checkNodeConnectivity(node, funPtrNode))
+            return ModRefInfo::ModRef;
+
         for(auto &param : Call->args()) {
             auto *paramNode = AG.getNode(param.get());
             if(AG.checkNodeConnectivity(node, paramNode))
@@ -1095,6 +1096,12 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
     Function * CalledF = Call->getCalledFunction();
     assert(CalledF != nullptr);
 
+    // the called function is known, we can access
+    // information about its memory effect
+    MemoryEffects ME = CalledF->getMemoryEffects();
+    if(ME.doesNotAccessMemory() || ! ME.doesAccessArgPointees())
+        return ModRefInfo::NoModRef;
+
     // function declaration is known, we can exploit
     // the argument indication to check for ModRefInfo
     bool mayRef = false;
@@ -1104,10 +1111,10 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
     while(paramIt != Call->arg_end() && argIt != CalledF->arg_end()){
         auto *paramNode = AG.getNode(paramIt->get());
         if(AG.checkNodeConnectivity(node, paramNode)) {
-            if(! argIt->onlyReadsMemory()) {
-                return ModRefInfo::ModRef;
-            } else {
+            if(argIt->onlyReadsMemory()) {
                 mayRef = true;
+            } else {
+                return ModRefInfo::ModRef;
             }
         }
         paramIt++;
