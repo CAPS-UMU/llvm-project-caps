@@ -41,6 +41,9 @@
 
 namespace llvm {
 
+//#define FIELD_SENSITIVITY
+#define DEBUG_TARGET
+
 #define PRINT_DOT(fd_dot, value_ptr) do {\
   std::string content = ""; \
 	for(char c : to_string(*value_ptr)) \
@@ -139,6 +142,9 @@ public:
         dotFile << nodeName+" [shape=record,label=\"{"+nodeName+"\\l| ";
         for(auto it = aliasclass.begin(); it != aliasclass.end(); it++){
           Value *v = *it;
+          
+          assert(v);
+
           if(Function *F = dyn_cast<Function>(v)){
               dotFile << "func: " << F->getName() << " \\l ";
           } else if(auto *Inst = dyn_cast<Instruction>(v)) {
@@ -154,13 +160,25 @@ public:
     }
 };
 
+// Actually represent an alias graph data structure
+// edges are memory acces from the pointers inside the node
 class AliasGraph {
 public:
     const Module * M;
     std::map<Value*, AliasNode*> NodeMap;
-    std::map<AliasNode*, AliasNode*> ToNodeMap;
-    std::map<AliasNode*, AliasNode*> FromNodeMap;
 
+#ifdef DEBUG_TARGET
+    std::string dbg_msg;
+#endif
+
+#ifdef FIELD_SENSITIVITY
+    std::map<AliasNode*, std::map<int,AliasNode*>> ToNodeMap;
+    std::map<AliasNode*, std::map<int,std::set<AliasNode*>>> FromNodeMap; 
+#else
+    std::map<AliasNode*, AliasNode*> ToNodeMap;
+    std::map<AliasNode*, AliasNode*> FromNodeMap; 
+#endif
+  
     bool Is_Analyze_Success;
     AliasFailureReasons failreason;
 
@@ -197,17 +215,15 @@ public:
 		void HandleLoad(LoadInst* LI);
 		void HandleStore(StoreInst* STI);
 		void HandleStore(Value* vop, Value* pop);
-		void HandleGEP(GetElementPtrInst* GEP);
 		void HandleGEP(GEPOperator* GEP);
 		void HandleAlloc(AllocaInst* ALI);
 		void HandleMove(Value* v1, Value* v2);
 		void HandleCai(CallInst *CAI);
-		void HandleReturn(Function* F, CallInst* cai);
 
 		void HandleOperator(Value* v);
 
 		//Interprocedural analysis
-	  void analyzeFunction(Function* F);
+	  SetVector<ReturnInst*> analyzeFunction(Function* F);
 };
 
 // Alias Analysis result on the alias graph
