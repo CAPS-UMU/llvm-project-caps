@@ -10,6 +10,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
+#include "llvm/IR/Argument.h"
 #include "llvm/IR/Constant.h"
 #include "llvm/IR/DerivedUser.h"
 #include "llvm/IR/GlobalAlias.h"
@@ -44,6 +45,29 @@ namespace llvm {
 //#define FIELD_SENSITIVITY
 #define DEBUG_TARGET
 
+#define PRINT_DOT_FUNC(fd_dot, F) do { \
+  std::string StrF = to_string(*F); \
+  std::string content = ""; \
+  bool endDeclaration = false; \
+	for(int i=0; i<StrF.size() && !endDeclaration; i++) \
+		switch(StrF[i]) {  \
+			case '<'  : content += R"(\<)"; break;  \
+			case '>'  : content += R"(\>)"; break;  \
+ \
+			case '{'  :  \
+        if(StrF[i+1] == '\n')  \
+          endDeclaration = true; \
+        else  \
+          content += R"(\{)"; \
+        break; \
+ \
+			case '}'  : content += R"(\})"; break;  \
+			case '\"' : content += R"(')"; break;  \
+			default: content += StrF[i];  \
+    } \
+  fd_dot << content << R"( ; \l)";  \
+} while(false)
+
 #define PRINT_DOT(fd_dot, value_ptr) do {\
   std::string content = ""; \
 	for(char c : to_string(*value_ptr)) \
@@ -56,6 +80,14 @@ namespace llvm {
 			default: content += c; \
 		} \
   fd_dot << content << R"( ; \l)"; \
+} while(false)
+
+#define PRINT_DOT_FUNC_SIMPLE(fd_dot, F) do { \
+  fd_dot << F->getName() << " ( "; \
+  for (auto * Arg = F->arg_begin(); Arg != F->arg_end(); Arg++) { \
+    fd_dot << *Arg << ", "; \
+  } \
+  fd_dot << R"( ) ; \l )"; \
 } while(false)
 
 // MAIN CLASS NEEDED FOR ALIAS ANALYSIS USING ALIAS GRAPH
@@ -146,15 +178,19 @@ public:
           assert(v);
 
           if(Function *F = dyn_cast<Function>(v)){
-              dotFile << "func: " << F->getName() << " \\l ";
-          } else if(auto *Inst = dyn_cast<Instruction>(v)) {
-						Function * containingFunc = Inst->getParent()->getParent();
-						dotFile << containingFunc->getName() << " : ";
-					} else if(auto *Arg = dyn_cast<Argument>(v)) {
-						Function * containingFunc = Arg->getParent();
-						dotFile << containingFunc->getName() << " [arg] : ";
+              dotFile << "func: ";
+              PRINT_DOT_FUNC_SIMPLE(dotFile, F);
+          } else {
+            if(auto *Inst = dyn_cast<Instruction>(v)) {
+					  	Function * containingFunc = Inst->getParent()->getParent();
+					  	dotFile << containingFunc->getName() << " : ";
+					  } else if(auto *Arg = dyn_cast<Argument>(v)) {
+					  	Function * containingFunc = Arg->getParent();
+					  	dotFile << containingFunc->getName() << " [arg] : ";
+            }
+            PRINT_DOT(dotFile, v);
           }
-          PRINT_DOT(dotFile, v);
+          
         }
         dotFile << "}\"];\n";
     }
@@ -167,6 +203,13 @@ public:
     const Module * M;
     std::map<Value*, AliasNode*> NodeMap;
 
+// this macro exists to detect error during aa analysis
+// I use it kinda like an exception :
+// - if the dbg_msg variable is empty, then no error message was registered and everything is fine
+// - if I stumbled into an error case, I fill the variable with the correct debugging info and return
+//   from the function where the error was found : I can then emulate "try" in the caller function
+//   by testing if the dbg_msg variable is empty or not
+// When deactivated, the corresponding part in the code are mostly replaced by "assert()"
 #ifdef DEBUG_TARGET
     std::string dbg_msg;
 #endif
@@ -218,9 +261,13 @@ public:
 		void HandleGEP(GEPOperator* GEP);
 		void HandleAlloc(AllocaInst* ALI);
 		void HandleMove(Value* v1, Value* v2);
-		void HandleCai(CallInst *CAI);
+    void HandleOperator(Value* v);
 
-		void HandleOperator(Value* v);
+    // Call handling
+    bool IrrelevantCall(CallInst *Call);
+    SetVector<Function*> getCallTargetSet(CallInst*);
+    void HandleUndefTarget(CallInst *Call);
+		void HandleCai(CallInst *CAI);
 
 		//Interprocedural analysis
 	  SetVector<ReturnInst*> analyzeFunction(Function* F);

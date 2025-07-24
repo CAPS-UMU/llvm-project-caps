@@ -1,17 +1,20 @@
 #include <cstddef>
 #include <cstdlib>
-#include <exception>
+#include <iterator>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/LegacyPassManager.h>
-#include <stdexcept>
+#include <set>
 #include <utility>
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Argument.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/GlobalAlias.h"
+#include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Operator.h"
@@ -29,10 +32,10 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ModRef.h"
 #include "llvm/Support/ScopedPrinter.h"
+#include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -457,30 +460,31 @@ bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
 int instrCount = 0; // for debug only
 
 SetVector<ReturnInst*> AliasGraph::analyzeFunction(Function* F){
-    SetVector<ReturnInst*> RetSites;
+    SetVector<ReturnInst*> NonVoidRetSites;
     
-    if(!F || F->getName().starts_with("llvm.lifetime")) 
-        return RetSites;
+    if(!F || F->empty() || F->getName().starts_with("llvm.lifetime")) 
+        return NonVoidRetSites;
 
     //testing what happens if a function is analyzed several times
     LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << "\n"); 
 
     for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
-        if(
-            auto * RI = dyn_cast<ReturnInst>(&(*i));
+        if( auto * RI = dyn_cast<ReturnInst>(&(*i)); 
             RI && RI->getReturnValue()
         ) {
-            RetSites.insert(RI);
-        } else {
-            Instruction *iInst = dyn_cast<Instruction>(&(*i));
-            this->HandleInst(iInst);
+            NonVoidRetSites.insert(RI);
         }
+        
+        Instruction *iInst = dyn_cast<Instruction>(&(*i));
+        this->HandleInst(iInst);
+
 #ifdef AAGRAPH_BUILD_FRAMES
-      writeToDot("../aliasgraph"+itostr(instrCount++)+".dot");
+        writeToDot("../aliasgraph"+itostr(instrCount++)+".dot");
 #endif // AAGRAPH_BUILD_FRAMES
+
     }
 
-    return RetSites;
+    return NonVoidRetSites;
 }
 
 /// INSTRUCTION HANDLER
@@ -525,7 +529,6 @@ void AliasGraph::HandleOperator(Value* v){
 
 void AliasGraph::HandleInst(Instruction* I){
     // Handle GEP and Cast operator
-    // Arguments of a call are also caught here
     for(unsigned int i = 0; i < I->getNumOperands(); i++){
         Value* op = I->getOperand(i);
         this->HandleOperator(op);
@@ -682,7 +685,7 @@ end:
 
 // *v2 = v1
 void AliasGraph::HandleStore(StoreInst* STI){
-    
+
     //store vop to pop
     Value* vop = STI->getValueOperand(); //v1
     Value* pop = STI->getPointerOperand(); //v2
@@ -890,63 +893,132 @@ void AliasGraph::HandleMove(Value* v1, Value* v2){
     this->mergeNode(node1, node2);
 }
 
+// Allow for filtering of debug & "llvm.lifetime" call that produces wrong alias result
+bool AliasGraph::IrrelevantCall(CallInst *Call) {
+    auto * CalledFunc = Call->getCalledFunction();
+    return Call->isDebugOrPseudoInst() || (
+        CalledFunc != nullptr && CalledFunc->getName().starts_with("llvm.lifetime"));
+}
+
+// Handling of undefined target for call, like a function that is only declared.
+// All pointer argument of the call are supposed to alias, as these function
+// can always be memcopy of memove function for instance.
+void AliasGraph::HandleUndefTarget(CallInst * Call) {
+    auto * Param = Call->arg_begin();
+    while(Param != Call->arg_end() && ! Param->get()->getType()->isPointerTy()) 
+        Param++;
+
+    if(Param == Call->arg_end())
+        // no ptr parameter found
+        return;
+
+    auto *OtherParam = Param + 1;
+    while(OtherParam != Call->arg_end()) {
+        if(OtherParam->get()->getType()->isPointerTy())
+            HandleMove(Param->get(), OtherParam->get());
+        OtherParam++;
+    }
+}
+
+// getting all the function that can be potentially called
+// weither the function is fully called to or it is an indirect call
+SetVector<Function*> AliasGraph::getCallTargetSet(CallInst *Call) {
+    SetVector<Function*> CallTarget;
+    
+    if(! Call->isIndirectCall()) {
+        CallTarget.insert(Call->getCalledFunction());
+        return CallTarget;
+    }
+
+    AliasNode * node = getNode(Call->getCalledOperand());
+    assert(node && "ICall operand node isn't in graph.");
+    
+    SetVector<AliasNode*> toExplore;
+    SetVector<AliasNode*> explored;
+    toExplore.insert(node);
+
+    while(!toExplore.empty()) {
+        auto * currentNode = toExplore.back();
+        toExplore.pop_back();
+
+        if(explored.contains(currentNode))
+            continue;
+
+        for(auto * V : currentNode->aliasclass) {
+            if (auto * F = dyn_cast<Function>(V))
+                CallTarget.insert(F);
+            
+            // if V is an array type containing function ptr
+            if (auto * Glb = dyn_cast<GlobalValue>(V)) {
+                for(int i=0; i<Glb->getNumOperands(); i++) {
+                    if (auto * F = dyn_cast<Function>(Glb->getOperand(i)))
+                        CallTarget.insert(F);
+                }
+            }
+        }
+
+        explored.insert(currentNode);
+        if(FromNodeMap.count(currentNode) > 0) toExplore.insert(FromNodeMap[currentNode]);
+        if(ToNodeMap.count(currentNode)   > 0) toExplore.insert(ToNodeMap[currentNode]);
+    }
+
+    return CallTarget;
+}
+
 // f(p1, p2, ...)
 void AliasGraph::HandleCai(CallInst *CAI) {
     // ignore debug information
-    if(CAI->isDebugOrPseudoInst()) return;
+    if(IrrelevantCall(CAI)) return;
 
-    //TODO : transform it to the SPATA handle call function
+    // create node for the call
     if(getNode(CAI) == nullptr){
         auto* node = new AliasNode();
         node->insert(CAI);
         this->NodeMap[CAI] = node;
     }
 
-    auto calledFunc = CAI->getCalledFunction();
-    if( calledFunc == nullptr ||
-        calledFunc->getName().starts_with("llvm.lifetime")) 
-        // ignoring indirect call and function for lifetime of static alloc object
-        return;
+    // indirect call or undefined function
+    SetVector<Function*> Targets = getCallTargetSet(CAI);
+    for(auto * F : Targets) {
 
-    // Test handling of memory copy instruction
-    if(calledFunc->getName().contains("memcpy")
-        || calledFunc->getName().contains("memmove")) {
-        HandleMove(CAI->getArgOperand(0), CAI->getArgOperand(1));
-        return;
-    }
-
-    // Moving the parameter of the call to the argument of the function
-    auto argCallIt = CAI->arg_begin();
-    auto funcArgIt = calledFunc->arg_begin();
-    while (argCallIt != CAI->arg_end() && funcArgIt != calledFunc->arg_end()) {
-        if(getNode(*argCallIt) == nullptr){
-            AliasNode* node = new AliasNode();
-            node->insert(*argCallIt);
-            this->NodeMap[*argCallIt] = node;
+        if(F->isDeclaration()) {
+            HandleUndefTarget(CAI);
         }
 
-        this->HandleMove(funcArgIt, *argCallIt);
-        funcArgIt++;
-        argCallIt++;
-    } 
+        // Moving the parameter of the call to the argument of the function
+        auto * CallArg = CAI->arg_begin();
+        auto * FuncArg = F->arg_begin();
+        while (CallArg != CAI->arg_end() && FuncArg != F->arg_end()) {
+            if(getNode(CallArg->get()) == nullptr){
+                AliasNode* node = new AliasNode();
+                node->insert(CallArg->get());
+                this->NodeMap[CallArg->get()] = node;
+            }
 
-    // analyzing the function on this callsite if not already done
-    auto entry = AnalyzedFuncSet.find(calledFunc);
-    if(entry == AnalyzedFuncSet.end() || ! entry->second.contains(CAI)) {
-        if(entry == AnalyzedFuncSet.end()) {
-            SetVector<CallInst*> initSVCall;
-            initSVCall.insert(CAI);
-            std::pair<Function*,SetVector<CallInst*>> newEntry (calledFunc, initSVCall);
-            AnalyzedFuncSet.insert(newEntry);
-        } else {
-            entry->second.insert(CAI);
+            this->HandleMove(FuncArg, CallArg->get());
+            FuncArg++;
+            CallArg++;
+        } 
+
+        // analyzing the function on this callsite if not already done
+        auto entry = AnalyzedFuncSet.find(F);
+        if(entry == AnalyzedFuncSet.end() || ! entry->second.contains(CAI)) {
+            if(entry == AnalyzedFuncSet.end()) {
+                SetVector<CallInst*> initSVCall;
+                initSVCall.insert(CAI);
+                std::pair<Function*,SetVector<CallInst*>> newEntry (F, initSVCall);
+                AnalyzedFuncSet.insert(newEntry);
+            } else {
+                entry->second.insert(CAI);
+            }
+
+            auto NonVoidRetVal = analyzeFunction(F);
+            // handling aliasing with the return values of the function called
+            for(auto *RI : NonVoidRetVal) {
+                HandleMove(RI->getReturnValue(), CAI);
+            }
         }
 
-        auto RetInst = analyzeFunction(calledFunc);
-        // handling aliasing with the return values of the function called
-        for(auto *RI : RetInst) {
-            HandleMove(RI->getReturnValue(), CAI);
-        }
     }
 }
 
@@ -1055,22 +1127,33 @@ AliasResult GraphAAResult::alias(const MemoryLocation &LocA, const MemoryLocatio
 // i.e is in the same node in the alias graph.
 // If so, and if the corresponding argument in the function call is not readonly,
 // then return ModRef.
+// Also check for aliasing with a potential return value, and take into account if the call
+// is indirect call
 ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
                          AAQueryInfo &AAQI) {
     AliasNode * node = AG.getNode(Loc);
+
+#ifdef DEBUG_TARGET
     if(node == nullptr) {
         AG.dbg_msg = "\033[31m"+to_string(*Loc.Ptr)+" : has no node in aa graph, can't proceed with getModRef.\033[0m\n";
+        return ModRefInfo::ModRef;
     }
+#else
     assert(node != nullptr);
+#endif // DEBUG_TARGET
 
     // check for aliasing with the return value
     if (Call->isReturnNonNull()) {
         AliasNode * retNode = AG.getNode(const_cast<CallBase*>(Call));
 
+#ifdef DEBUG_TARGET
         if(!retNode) {
             AG.dbg_msg = to_string(*Call) + " not registered in a-graph.";
+            return ModRefInfo::ModRef;
         }
+#else
         assert(retNode);
+#endif //DEBUG_TARGET
 
         if(AG.checkNodeConnectivity(node, retNode))
             return ModRefInfo::ModRef;
