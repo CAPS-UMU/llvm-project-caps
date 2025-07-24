@@ -203,17 +203,6 @@ public:
     const Module * M;
     std::map<Value*, AliasNode*> NodeMap;
 
-// this macro exists to detect error during aa analysis
-// I use it kinda like an exception :
-// - if the dbg_msg variable is empty, then no error message was registered and everything is fine
-// - if I stumbled into an error case, I fill the variable with the correct debugging info and return
-//   from the function where the error was found : I can then emulate "try" in the caller function
-//   by testing if the dbg_msg variable is empty or not
-// When deactivated, the corresponding part in the code are mostly replaced by "assert()"
-#ifdef DEBUG_TARGET
-    std::string dbg_msg;
-#endif
-
 #ifdef FIELD_SENSITIVITY
     std::map<AliasNode*, std::map<int,AliasNode*>> ToNodeMap;
     std::map<AliasNode*, std::map<int,std::set<AliasNode*>>> FromNodeMap; 
@@ -225,7 +214,19 @@ public:
     bool Is_Analyze_Success;
     AliasFailureReasons failreason;
 
-    DenseMap<Function*, SetVector<CallInst*>> AnalyzedFuncSet;
+    DenseMap<Function*, SetVector<ReturnInst*>> AnalyzedFuncSet;
+    DenseMap<Function*, SetVector<CallInst*>> AliasFunctionCallSite;
+
+// this macro exists to detect error during aa analysis
+// I use it kinda like an exception :
+// - if the dbg_msg variable is empty, then no error message was registered and everything is fine
+// - if I stumbled into an error case, I fill the variable with the correct debugging info and return
+//   from the function where the error was found : I can then emulate "try" in the caller function
+//   by testing if the dbg_msg variable is empty or not
+// When deactivated, the corresponding part in the code are mostly replaced by "assert()"
+#ifdef DEBUG_TARGET
+    std::string dbg_msg;
+#endif
 
     AliasGraph(){
       NodeMap.clear();
@@ -270,7 +271,7 @@ public:
 		void HandleCai(CallInst *CAI);
 
 		//Interprocedural analysis
-	  SetVector<ReturnInst*> analyzeFunction(Function* F);
+	  void analyzeFunction(Function* F);
 };
 
 // Alias Analysis result on the alias graph

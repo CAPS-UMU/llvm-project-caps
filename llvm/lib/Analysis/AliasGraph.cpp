@@ -1,6 +1,4 @@
-#include <cstddef>
 #include <cstdlib>
-#include <iterator>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
@@ -55,37 +53,37 @@ AliasGraph::AliasGraph(Module &M) {
     AnalyzedFuncSet.clear();
     this->M = &M;
 
-    set<Function *> unusedFunctions;
+    set<Function *> usedFunction;
     set<Function *> notAnalyzedFunctions;
 
     for(Function &F : M) {
         if (F.use_empty())
-            unusedFunctions.insert(&F);
-        else
             notAnalyzedFunctions.insert(&F);
+        else
+            usedFunction.insert(&F);
     }
 
-    // begin by analyzing the function unused in this module
-    for(Function * F : unusedFunctions) {
-        SetVector<CallInst*> empty_callsites;
-        std::pair<Function*,SetVector<CallInst*>> entry (F, empty_callsites);
-        this->AnalyzedFuncSet.insert(entry);
-
+    // begin by analyzing the function used in this module
+    for(Function * F : usedFunction) {
         LLVM_DEBUG(dbgs() << "Analyzing : \033[30m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
     }
 
-    // continue by analyzing function that have no direct call
+    // continue by analyzing function that have no use in the module
     for(auto *F : notAnalyzedFunctions) {
-        if(this->AnalyzedFuncSet.contains(F)) 
-            continue;
-
-        SetVector<CallInst*> empty_callsites;
-        std::pair<Function*,SetVector<CallInst*>> entry (F, empty_callsites);
-        this->AnalyzedFuncSet.insert(entry);
-
         LLVM_DEBUG(dbgs() << "Analyzing : \033[33m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
+    }
+
+    // compute alias information with the callsite that were analyzed
+    // when return value were not known
+    for(auto [F , CallSet] : AliasFunctionCallSite) {
+        auto NonVoidRetVal = AnalyzedFuncSet[F];
+        for (auto * CI : CallSet) {
+            for (auto * RI : NonVoidRetVal) {
+                HandleMove(RI->getReturnValue(), CI);
+            }
+        }
     }
 }
 
@@ -459,14 +457,31 @@ bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
 /// INTERPROCEDURAL ALIAS ANALYSIS
 int instrCount = 0; // for debug only
 
-SetVector<ReturnInst*> AliasGraph::analyzeFunction(Function* F){
+void AliasGraph::analyzeFunction(Function* F){
     SetVector<ReturnInst*> NonVoidRetSites;
-    
-    if(!F || F->empty() || F->getName().starts_with("llvm.lifetime")) 
-        return NonVoidRetSites;
 
-    //testing what happens if a function is analyzed several times
-    LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << "\n"); 
+    if(AnalyzedFuncSet.contains(F))
+        return;
+
+    LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << "\n");
+
+    // For function whose argument could be function pointer, we need
+    // to register the function argument in alias graph, as we don't 
+    // know in which order will the function be analyzed : hence a function pointer
+    // passed as an agrument could not have been registered in the alias graph
+    for(auto arg = F->arg_begin(); arg != F->arg_end(); arg++) {
+        if(arg->getType()->isPointerTy() && getNode(arg) == nullptr) {
+            AliasNode *node = new AliasNode();
+            node->insert(arg);
+            NodeMap[arg] = node;
+        }
+    }
+
+    if(!F || F->empty() || F->getName().starts_with("llvm.lifetime")) {
+        auto newEntry = std::pair<Function*,SetVector<ReturnInst*>> (F, NonVoidRetSites);
+        AnalyzedFuncSet.insert(newEntry);
+        return;
+    }
 
     for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
         if( auto * RI = dyn_cast<ReturnInst>(&(*i)); 
@@ -484,7 +499,8 @@ SetVector<ReturnInst*> AliasGraph::analyzeFunction(Function* F){
 
     }
 
-    return NonVoidRetSites;
+    auto newEntry = std::pair<Function*,SetVector<ReturnInst*>> (F, NonVoidRetSites);
+    AnalyzedFuncSet.insert(newEntry);
 }
 
 /// INSTRUCTION HANDLER
@@ -931,7 +947,16 @@ SetVector<Function*> AliasGraph::getCallTargetSet(CallInst *Call) {
     }
 
     AliasNode * node = getNode(Call->getCalledOperand());
+
+#ifdef DEBUG_TARGET
+    if(!node) {
+        auto op = Call->getCalledOperand();
+        errs() << "\033[31mOn " << to_string(*Call) << " ; \ncalled operand : " << *op << " ; is not registered in a-graph.\n";
+        assert(false && "Aborting.");
+    }
+#else
     assert(node && "ICall operand node isn't in graph.");
+#endif
     
     SetVector<AliasNode*> toExplore;
     SetVector<AliasNode*> explored;
@@ -1001,24 +1026,27 @@ void AliasGraph::HandleCai(CallInst *CAI) {
         } 
 
         // analyzing the function on this callsite if not already done
-        auto entry = AnalyzedFuncSet.find(F);
-        if(entry == AnalyzedFuncSet.end() || ! entry->second.contains(CAI)) {
-            if(entry == AnalyzedFuncSet.end()) {
-                SetVector<CallInst*> initSVCall;
-                initSVCall.insert(CAI);
-                std::pair<Function*,SetVector<CallInst*>> newEntry (F, initSVCall);
-                AnalyzedFuncSet.insert(newEntry);
+        auto funcRetvalEntry = AnalyzedFuncSet.find(F);
+        auto funcCallsiteEntry = AliasFunctionCallSite.find(F);
+        if(funcRetvalEntry == AnalyzedFuncSet.end()) { 
+            // the function was not analyzed yet, we need to register
+            // the call so that it will be handled later
+            if(funcCallsiteEntry == AliasFunctionCallSite.end()) {
+                SetVector<CallInst*> CallSet;
+                CallSet.insert(CAI);
+                auto newEntry = std::pair<Function*, SetVector<CallInst*>> (F, CallSet);
+                AliasFunctionCallSite.insert(newEntry);
             } else {
-                entry->second.insert(CAI);
+                funcCallsiteEntry->second.insert(CAI);
             }
-
-            auto NonVoidRetVal = analyzeFunction(F);
+        } else {
+            // function was analyzed and the ret values are known, we can use the according alias information
+            auto NonVoidRetVal = funcRetvalEntry->second;
             // handling aliasing with the return values of the function called
             for(auto *RI : NonVoidRetVal) {
                 HandleMove(RI->getReturnValue(), CAI);
             }
         }
-
     }
 }
 
