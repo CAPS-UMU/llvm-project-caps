@@ -8,6 +8,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -53,18 +54,18 @@ AliasGraph::AliasGraph(Module &M) {
     AnalyzedFuncSet.clear();
     this->M = &M;
 
-    set<Function *> usedFunction;
+    set<Function *> unusedFunc;
     set<Function *> notAnalyzedFunctions;
 
     for(Function &F : M) {
         if (F.use_empty())
-            notAnalyzedFunctions.insert(&F);
+            unusedFunc.insert(&F);
         else
-            usedFunction.insert(&F);
+            notAnalyzedFunctions.insert(&F);
     }
 
     // begin by analyzing the function used in this module
-    for(Function * F : usedFunction) {
+    for(Function * F : unusedFunc) {
         LLVM_DEBUG(dbgs() << "Analyzing : \033[30m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
     }
@@ -459,6 +460,7 @@ int instrCount = 0; // for debug only
 
 void AliasGraph::analyzeFunction(Function* F){
     SetVector<ReturnInst*> NonVoidRetSites;
+    SetVector<GlobalValue*> GlobalsUsed;
 
     if(AnalyzedFuncSet.contains(F))
         return;
@@ -477,9 +479,11 @@ void AliasGraph::analyzeFunction(Function* F){
         }
     }
 
-    if(!F || F->empty() || F->getName().starts_with("llvm.lifetime")) {
-        auto newEntry = std::pair<Function*,SetVector<ReturnInst*>> (F, NonVoidRetSites);
-        AnalyzedFuncSet.insert(newEntry);
+    if(!F || F->isDeclaration() || F->getName().starts_with("llvm.lifetime")) {
+        auto FuncEntry = std::pair<Function*,SetVector<ReturnInst*>> (F, NonVoidRetSites);
+        AnalyzedFuncSet.insert(FuncEntry);
+        auto GlbUseEntry = std::pair<Function*,SetVector<GlobalValue*>> (F, GlobalsUsed);
+        FuncGlobalUsed.insert(GlbUseEntry);
         return;
     }
 
@@ -547,6 +551,10 @@ void AliasGraph::HandleInst(Instruction* I){
     // Handle GEP and Cast operator
     for(unsigned int i = 0; i < I->getNumOperands(); i++){
         Value* op = I->getOperand(i);
+
+        if(auto * Glb = dyn_cast<GlobalValue>(op))
+            FuncGlobalUsed[I->getFunction()].insert(Glb);
+
         this->HandleOperator(op);
     }
 
@@ -1025,7 +1033,7 @@ void AliasGraph::HandleCai(CallInst *CAI) {
             CallArg++;
         } 
 
-        // analyzing the function on this callsite if not already done
+        // computing the aliasing with the return values of the call
         auto funcRetvalEntry = AnalyzedFuncSet.find(F);
         auto funcCallsiteEntry = AliasFunctionCallSite.find(F);
         if(funcRetvalEntry == AnalyzedFuncSet.end()) { 
@@ -1187,52 +1195,53 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
             return ModRefInfo::ModRef;
     }
 
-    // indirect call, can only say there is no mod ref if
-    // the parameter don't alias with the given memory location
-    if(Call->isIndirectCall()) {
-        AliasNode * funPtrNode = AG.getNode(Call->getCalledOperand());
-        if(AG.checkNodeConnectivity(node, funPtrNode))
-            return ModRefInfo::ModRef;
+    SetVector<Function*> Targets;
+    if (auto * CAI = dyn_cast<CallInst>(Call))
+        Targets = AG.getCallTargetSet(const_cast<CallInst*>(CAI));
 
-        for(auto &param : Call->args()) {
-            auto *paramNode = AG.getNode(param.get());
-            if(AG.checkNodeConnectivity(node, paramNode))
-                // there is a may alias relation, then mod ref is output
+#ifdef DEBUG_TARGET
+    if(Targets.empty()) {
+        AG.dbg_msg = to_string(*Call) + " ; has no target function found.";
+        return ModRefInfo::ModRef;
+    }
+#else
+    assert(!Targets.empty() && "Call has no target function.");
+#endif
+
+    auto Result = ModRefInfo::NoModRef;
+    for (auto * F : Targets) {
+        // checking for each possible target function
+        MemoryEffects ME = F->getMemoryEffects();
+        if(ME.doesNotAccessMemory() || ! ME.doesAccessArgPointees())
+            Result |= ModRefInfo::NoModRef;
+
+        // checking for aliasing with th global variable used inside the function
+        for(auto * Glb : AG.FuncGlobalUsed[F]) {
+            AliasNode * glbNode = AG.getNode(Glb);
+            if(!glbNode) continue;
+
+            if(AG.checkNodeConnectivity(node, glbNode))
                 return ModRefInfo::ModRef;
         }
 
-        return ModRefInfo::NoModRef;
-    }
-
-    Function * CalledF = Call->getCalledFunction();
-    assert(CalledF != nullptr);
-
-    // the called function is known, we can access
-    // information about its memory effect
-    MemoryEffects ME = CalledF->getMemoryEffects();
-    if(ME.doesNotAccessMemory() || ! ME.doesAccessArgPointees())
-        return ModRefInfo::NoModRef;
-
-    // function declaration is known, we can exploit
-    // the argument indication to check for ModRefInfo
-    bool mayRef = false;
-
-    auto paramIt = Call->arg_begin();
-    auto argIt = CalledF->arg_begin();
-    while(paramIt != Call->arg_end() && argIt != CalledF->arg_end()){
-        auto *paramNode = AG.getNode(paramIt->get());
-        if(AG.checkNodeConnectivity(node, paramNode)) {
-            if(argIt->onlyReadsMemory()) {
-                mayRef = true;
-            } else {
-                return ModRefInfo::ModRef;
+        // we can exploit the argument indication to check for ModRefInfo
+        auto paramIt = Call->arg_begin();
+        auto argIt = F->arg_begin();
+        while(paramIt != Call->arg_end() && argIt != F->arg_end()){
+            auto *paramNode = AG.getNode(paramIt->get());
+            if(AG.checkNodeConnectivity(node, paramNode)) {
+                if(argIt->onlyReadsMemory()) {
+                    Result |= ModRefInfo::Ref;
+                } else {
+                    return ModRefInfo::ModRef;
+                }
             }
+            paramIt++;
+            argIt++;
         }
-        paramIt++;
-        argIt++;
     }
 
-    return mayRef ? ModRefInfo::Ref : ModRefInfo::NoModRef;
+    return Result;
 }
 
 MemoryEffects GraphAAResult::getMemoryEffects(const Function *F) {

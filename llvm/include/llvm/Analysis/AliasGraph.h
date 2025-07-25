@@ -216,6 +216,7 @@ public:
 
     DenseMap<Function*, SetVector<ReturnInst*>> AnalyzedFuncSet;
     DenseMap<Function*, SetVector<CallInst*>> AliasFunctionCallSite;
+    DenseMap<Function*, SetVector<GlobalValue*>> FuncGlobalUsed;
 
 // this macro exists to detect error during aa analysis
 // I use it kinda like an exception :
