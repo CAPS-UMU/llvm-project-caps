@@ -1194,7 +1194,7 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
 #endif // DEBUG_TARGET
 
     // check for aliasing with the return value
-    if (Call->isReturnNonNull()) {
+    if (! Call->getType()->isVoidTy()) {
         AliasNode * retNode = AG.getNode(const_cast<CallBase*>(Call));
 
 #ifdef DEBUG_TARGET
