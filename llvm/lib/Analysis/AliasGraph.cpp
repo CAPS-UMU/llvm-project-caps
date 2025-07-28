@@ -54,38 +54,74 @@ AliasGraph::AliasGraph(Module &M) {
     AnalyzedFuncSet.clear();
     this->M = &M;
 
-    set<Function *> unusedFunc;
+    set<Function *> usedFunction;
     set<Function *> notAnalyzedFunctions;
 
     for(Function &F : M) {
         if (F.use_empty())
-            unusedFunc.insert(&F);
-        else
             notAnalyzedFunctions.insert(&F);
+        else
+            usedFunction.insert(&F);
     }
 
-    // begin by analyzing the function used in this module
-    for(Function * F : unusedFunc) {
+    for(Function * F : usedFunction) {
         LLVM_DEBUG(dbgs() << "Analyzing : \033[30m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
     }
 
-    // continue by analyzing function that have no use in the module
     for(auto *F : notAnalyzedFunctions) {
         LLVM_DEBUG(dbgs() << "Analyzing : \033[33m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
     }
 
-    // compute alias information with the callsite that were analyzed
-    // when return value were not known
-    for(auto [F , CallSet] : AliasFunctionCallSite) {
+    // for each indirect call, compute the potential new target and add the aliasing relation to the agraph
+    bool modified;
+    do {
+        modified = false;
+
+        // function have now all been analyzed, register aliasing between return value and
+        // the different callsites
+        for(auto &[F , CallSet] : UnknownCallRetVal) {
         auto NonVoidRetVal = AnalyzedFuncSet[F];
+            if(CallSet.empty() || NonVoidRetVal.empty()) {
+                modified = modified || false;
+                continue;
+            }
+
+            modified = true;
         for (auto * CI : CallSet) {
-            for (auto * RI : NonVoidRetVal) {
+                for (auto * RI : NonVoidRetVal)
                 HandleMove(RI->getReturnValue(), CI);
             }
+            CallSet.clear();
         }
-    }
+
+        // compute if there are new targets for each indirect call,
+        // and if so, handle the aliasing between arg of the call and targets
+        // plus register the call in the return value list to analyze
+        for(auto &[Call, Targets] : ICallTargets) {
+            SetVector<Function*> NewTargets = getCallTargetSet(Call);
+            NewTargets.set_subtract(Targets);
+
+            if(NewTargets.empty()) {
+                modified = modified || false;
+                continue;
+            }
+
+            modified = true;
+            for(auto F : NewTargets) {
+                HandleParamArgAliasing(Call, F);
+                Targets.insert(F);
+                if(F->willReturn())
+                    UnknownCallRetVal[F].insert(Call);
+            }
+        }
+    } while(modified);
+
+    AnalyzedFuncSet.clear();
+    UnknownCallRetVal.clear();
+    FuncGlobalUsed.clear();
+    ICallTargets.clear();
 }
 
 //Merge n1 into n2
