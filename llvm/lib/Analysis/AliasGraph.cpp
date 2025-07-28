@@ -941,6 +941,24 @@ void AliasGraph::HandleUndefTarget(CallInst * Call) {
         if(OtherParam->get()->getType()->isPointerTy())
             HandleMove(Param->get(), OtherParam->get());
         OtherParam++;
+}
+}
+
+// Register aliasing relation between argument and parameter of the call
+void AliasGraph::HandleParamArgAliasing(CallInst * CAI, Function * Target) {
+    auto * CallArg = CAI->arg_begin();
+    auto * FuncArg = Target->arg_begin();
+    
+    while (CallArg != CAI->arg_end() && FuncArg != Target->arg_end()) {
+        if(getNode(CallArg->get()) == nullptr){
+            AliasNode* node = new AliasNode();
+            node->insert(CallArg->get());
+            this->NodeMap[CallArg->get()] = node;
+        }
+
+        this->HandleMove(FuncArg, CallArg->get());
+        FuncArg++;
+        CallArg++;
     }
 }
 
