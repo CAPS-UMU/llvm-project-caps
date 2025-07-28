@@ -1030,38 +1030,35 @@ void AliasGraph::HandleCai(CallInst *CAI) {
 
     // indirect call or undefined function
     SetVector<Function*> Targets = getCallTargetSet(CAI);
+    if(CAI->isIndirectCall()) {
+        SetVector<Function*> TargetDONE;
+        auto newEntry = std::pair<CallInst*, SetVector<Function*>> 
+            (CAI, TargetDONE);
+        ICallTargets.insert(newEntry);
+    }
+
     for(auto * F : Targets) {
 
-        if(F->isDeclaration()) {
+        if(F->isDeclaration())
             HandleUndefTarget(CAI);
-        }
 
         // Moving the parameter of the call to the argument of the function
-        auto * CallArg = CAI->arg_begin();
-        auto * FuncArg = F->arg_begin();
-        while (CallArg != CAI->arg_end() && FuncArg != F->arg_end()) {
-            if(getNode(CallArg->get()) == nullptr){
-                AliasNode* node = new AliasNode();
-                node->insert(CallArg->get());
-                this->NodeMap[CallArg->get()] = node;
-            }
-
-            this->HandleMove(FuncArg, CallArg->get());
-            FuncArg++;
-            CallArg++;
-        } 
+        HandleParamArgAliasing(CAI, F);
+        if(ICallTargets.contains(CAI))
+            // the aliasing between arg and param on this function is done
+            ICallTargets[CAI].insert(F); 
 
         // computing the aliasing with the return values of the call
         auto funcRetvalEntry = AnalyzedFuncSet.find(F);
-        auto funcCallsiteEntry = AliasFunctionCallSite.find(F);
+        auto funcCallsiteEntry = UnknownCallRetVal.find(F);
         if(funcRetvalEntry == AnalyzedFuncSet.end()) { 
             // the function was not analyzed yet, we need to register
             // the call so that it will be handled later
-            if(funcCallsiteEntry == AliasFunctionCallSite.end()) {
+            if(funcCallsiteEntry == UnknownCallRetVal.end()) {
                 SetVector<CallInst*> CallSet;
                 CallSet.insert(CAI);
                 auto newEntry = std::pair<Function*, SetVector<CallInst*>> (F, CallSet);
-                AliasFunctionCallSite.insert(newEntry);
+                UnknownCallRetVal.insert(newEntry);
             } else {
                 funcCallsiteEntry->second.insert(CAI);
             }
