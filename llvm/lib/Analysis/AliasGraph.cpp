@@ -1,40 +1,22 @@
-#include <cstdlib>
+#include <cassert>
 #include <llvm/IR/Function.h>
-#include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
-#include <llvm/IR/LegacyPassManager.h>
-#include <set>
-#include <utility>
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Argument.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalValue.h"
-#include "llvm/IR/InstrTypes.h"
-#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
 
 #include "llvm/Analysis/AliasGraph.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/MemoryLocation.h"
-#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/PassManager.h"
-#include "llvm/Pass.h"
-#include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ModRef.h"
-#include "llvm/Support/ScopedPrinter.h"
-#include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -82,16 +64,16 @@ AliasGraph::AliasGraph(Module &M) {
         // function have now all been analyzed, register aliasing between return value and
         // the different callsites
         for(auto &[F , CallSet] : UnknownCallRetVal) {
-        auto NonVoidRetVal = AnalyzedFuncSet[F];
+            auto NonVoidRetVal = AnalyzedFuncSet[F];
             if(CallSet.empty() || NonVoidRetVal.empty()) {
                 modified = modified || false;
                 continue;
             }
 
             modified = true;
-        for (auto * CI : CallSet) {
+            for (auto * CI : CallSet) {
                 for (auto * RI : NonVoidRetVal)
-                HandleMove(RI->getReturnValue(), CI);
+                    HandleMove(RI->getReturnValue(), CI);
             }
             CallSet.clear();
         }
@@ -317,7 +299,7 @@ void AliasGraph::mergeNode(AliasNode* n1, AliasNode* n2){
             this->ToNodeMap[n1_fromNode] = n2;
         }
     }
-#endif //
+#endif // FIELD_SENSITIVITY
 }
 
 AliasNode * AliasGraph::getNode(Value *V){
@@ -966,7 +948,7 @@ void AliasGraph::HandleUndefTarget(CallInst * Call) {
         if(OtherParam->get()->getType()->isPointerTy())
             HandleMove(Param->get(), OtherParam->get());
         OtherParam++;
-}
+    }
 }
 
 // Register aliasing relation between argument and parameter of the call
@@ -984,7 +966,7 @@ void AliasGraph::HandleParamArgAliasing(CallInst * CAI, Function * Target) {
         this->HandleMove(FuncArg, CallArg->get());
         FuncArg++;
         CallArg++;
-    }
+    } 
 }
 
 // getting all the function that can be potentially called
@@ -1026,7 +1008,7 @@ SetVector<Function*> AliasGraph::getCallTargetSet(CallInst *Call) {
             
             // if V is an array type containing function ptr
             if (auto * Glb = dyn_cast<GlobalValue>(V)) {
-                for(int i=0; i<Glb->getNumOperands(); i++) {
+                for(unsigned int i=0; i<Glb->getNumOperands(); i++) {
                     if (auto * F = dyn_cast<Function>(Glb->getOperand(i)))
                         CallTarget.insert(F);
                 }
@@ -1041,7 +1023,7 @@ SetVector<Function*> AliasGraph::getCallTargetSet(CallInst *Call) {
     return CallTarget;
 }
 
-// f(p1, p2, ...)
+// < ret = > f(p1, p2, ...)
 void AliasGraph::HandleCai(CallInst *CAI) {
     // ignore debug information
     if(IrrelevantCall(CAI)) return;
@@ -1072,7 +1054,7 @@ void AliasGraph::HandleCai(CallInst *CAI) {
         if(ICallTargets.contains(CAI))
             // the aliasing between arg and param on this function is done
             ICallTargets[CAI].insert(F); 
-
+        
         // computing the aliasing with the return values of the call
         auto funcRetvalEntry = AnalyzedFuncSet.find(F);
         auto funcCallsiteEntry = UnknownCallRetVal.find(F);
@@ -1249,17 +1231,18 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
 #endif
 
     auto Result = ModRefInfo::NoModRef;
+    // checking for each possible target function
     for (auto * F : Targets) {
-        // checking for each possible target function
+        // if memory effect are known and mmeory not accessed
         MemoryEffects ME = F->getMemoryEffects();
         if(ME.doesNotAccessMemory() || ! ME.doesAccessArgPointees())
             Result |= ModRefInfo::NoModRef;
 
-        // checking for aliasing with th global variable used inside the function
+        // checking for aliasing with the global variable used inside the function
         for(auto * Glb : AG.FuncGlobalUsed[F]) {
             AliasNode * glbNode = AG.getNode(Glb);
             if(!glbNode) continue;
-
+            // if aliasing with a global, then the variable can be mod/ref by the func
             if(AG.checkNodeConnectivity(node, glbNode))
                 return ModRefInfo::ModRef;
         }
