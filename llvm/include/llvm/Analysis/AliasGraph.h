@@ -214,9 +214,19 @@ public:
     bool Is_Analyze_Success;
     AliasFailureReasons failreason;
 
+    // analyzed function are registered in this map, with their set of return value
+    // which can be empty if the function does not return value (void)
     DenseMap<Function*, SetVector<ReturnInst*>> AnalyzedFuncSet;
-    DenseMap<Function*, SetVector<CallInst*>> AliasFunctionCallSite;
+
+    // For call analyzed before function are analyzed, remember those calls
+    // to know register aliasing information with the return values after the function is analyzed
+    DenseMap<Function*, SetVector<CallInst*>> UnknownCallRetVal;
+
+    // register the global mod/ref by the function
     DenseMap<Function*, SetVector<GlobalValue*>> FuncGlobalUsed;
+
+    // map to update the target function set of the indirect call
+    DenseMap<CallInst*, SetVector<Function*>> ICallTargets;
 
 // this macro exists to detect error during aa analysis
 // I use it kinda like an exception :
@@ -269,6 +279,7 @@ public:
     bool IrrelevantCall(CallInst *Call);
     SetVector<Function*> getCallTargetSet(CallInst*);
     void HandleUndefTarget(CallInst *Call);
+    void HandleParamArgAliasing(CallInst * CAI, Function * Target);
 		void HandleCai(CallInst *CAI);
 
 		//Interprocedural analysis
