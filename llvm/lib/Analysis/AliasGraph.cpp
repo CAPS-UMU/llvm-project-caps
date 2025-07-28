@@ -459,9 +459,6 @@ bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
 int instrCount = 0; // for debug only
 
 void AliasGraph::analyzeFunction(Function* F){
-    SetVector<ReturnInst*> NonVoidRetSites;
-    SetVector<GlobalValue*> GlobalsUsed;
-
     if(AnalyzedFuncSet.contains(F))
         return;
 
@@ -470,7 +467,7 @@ void AliasGraph::analyzeFunction(Function* F){
     // For function whose argument could be function pointer, we need
     // to register the function argument in alias graph, as we don't 
     // know in which order will the function be analyzed : hence a function pointer
-    // passed as an agrument could not have been registered in the alias graph
+    // passed as an argument could not have been registered in the alias graph
     for(auto arg = F->arg_begin(); arg != F->arg_end(); arg++) {
         if(arg->getType()->isPointerTy() && getNode(arg) == nullptr) {
             AliasNode *node = new AliasNode();
@@ -479,19 +476,14 @@ void AliasGraph::analyzeFunction(Function* F){
         }
     }
 
-    if(!F || F->isDeclaration() || F->getName().starts_with("llvm.lifetime")) {
-        auto FuncEntry = std::pair<Function*,SetVector<ReturnInst*>> (F, NonVoidRetSites);
-        AnalyzedFuncSet.insert(FuncEntry);
-        auto GlbUseEntry = std::pair<Function*,SetVector<GlobalValue*>> (F, GlobalsUsed);
-        FuncGlobalUsed.insert(GlbUseEntry);
+    if(F->isDeclaration() || F->getName().starts_with("llvm.lifetime"))
         return;
-    }
 
     for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
         if( auto * RI = dyn_cast<ReturnInst>(&(*i)); 
             RI && RI->getReturnValue()
         ) {
-            NonVoidRetSites.insert(RI);
+            AnalyzedFuncSet[F].insert(RI);
         }
         
         Instruction *iInst = dyn_cast<Instruction>(&(*i));
