@@ -494,9 +494,6 @@ void AliasGraph::analyzeFunction(Function* F){
 #endif // AAGRAPH_BUILD_FRAMES
 
     }
-
-    auto newEntry = std::pair<Function*,SetVector<ReturnInst*>> (F, NonVoidRetSites);
-    AnalyzedFuncSet.insert(newEntry);
 }
 
 /// INSTRUCTION HANDLER
