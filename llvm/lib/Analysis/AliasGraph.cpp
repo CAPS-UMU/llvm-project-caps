@@ -1221,9 +1221,8 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
     if (auto * CAI = dyn_cast<CallInst>(Call))
         Targets = AG.getCallTargetSet(const_cast<CallInst*>(CAI));
 
-#ifdef DEBUG_TARGET
-    if(Targets.empty()) {
-        AG.dbg_msg = to_string(*Call) + " ; has no target function found.";
+    if (Targets.empty()) {
+        errs() << "\033[31m" << *Call << " : has no target function in a-graph.\033[0m\n";
         return ModRefInfo::ModRef;
     }
 #else
@@ -1261,6 +1260,15 @@ ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocati
             }
             paramIt++;
             argIt++;
+        }
+
+        // for variadic function, check if the rest of the call arg are aliases to the memory loc
+        // if so, we can't tell if they will be mod/ref by the call or not, so return mod-ref
+        while(paramIt != Call->arg_end()) {
+            auto *paramNode = AG.getNode(paramIt->get());
+            if(AG.checkNodeConnectivity(node, paramNode)) 
+                return ModRefInfo::ModRef;
+            paramIt++;
         }
     }
 
