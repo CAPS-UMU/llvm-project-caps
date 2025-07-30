@@ -279,7 +279,7 @@ public:
     bool IrrelevantCall(CallInst *Call);
     SetVector<Function*> getCallTargetSet(CallInst*);
     void HandleUndefTarget(CallInst *Call);
-    void HandleParamArgAliasing(CallInst * CAI, Function * Target);
+    Use* HandleParamArgAliasing(CallInst * CAI, Function * Target);
 		void HandleCai(CallInst *CAI);
 
 		//Interprocedural analysis

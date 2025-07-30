@@ -1050,7 +1050,7 @@ void AliasGraph::HandleCai(CallInst *CAI) {
             HandleUndefTarget(CAI);
 
         // Moving the parameter of the call to the argument of the function
-        HandleParamArgAliasing(CAI, F);
+        auto * CallArg = HandleParamArgAliasing(CAI, F);
         if(ICallTargets.contains(CAI))
             // the aliasing between arg and param on this function is done
             ICallTargets[CAI].insert(F); 
