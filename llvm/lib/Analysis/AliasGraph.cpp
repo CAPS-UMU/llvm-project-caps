@@ -1003,15 +1003,22 @@ SetVector<Function*> AliasGraph::getCallTargetSet(CallInst *Call) {
             continue;
 
         for(auto * V : currentNode->aliasclass) {
-            if (auto * F = dyn_cast<Function>(V))
+            if (auto * F = dyn_cast<Function>(V)) {
                 CallTarget.insert(F);
+                continue;
+            }
+                
+            // if V is a global initialized with aggregate type
+            auto * Glb = dyn_cast<GlobalVariable>(V);
+            if(!Glb) continue;
             
-            // if V is an array type containing function ptr
-            if (auto * Glb = dyn_cast<GlobalValue>(V)) {
-                for(unsigned int i=0; i<Glb->getNumOperands(); i++) {
-                    if (auto * F = dyn_cast<Function>(Glb->getOperand(i)))
+            auto * Aggregate = dyn_cast<ConstantAggregate>(Glb->getInitializer());
+            if (! Aggregate) continue;
+            
+            for(auto * op = Aggregate->op_begin(); op != Aggregate->op_end(); op++) {
+                errs() << *op->get() << " : op of glb : " << *op->get()->getType() << "\n";
+                if (auto * F = dyn_cast<Function>(op->get()))
                         CallTarget.insert(F);
-                }
             }
         }
 
