@@ -1,38 +1,22 @@
-#include <cstddef>
-#include <cstdlib>
-#include <exception>
+#include <cassert>
 #include <llvm/IR/Function.h>
-#include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
-#include <llvm/IR/LegacyPassManager.h>
-#include <stdexcept>
-#include <utility>
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Argument.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/InstrTypes.h"
-#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
 
 #include "llvm/Analysis/AliasGraph.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/MemoryLocation.h"
-#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/PassManager.h"
-#include "llvm/Pass.h"
-#include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ModRef.h"
-#include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -52,38 +36,74 @@ AliasGraph::AliasGraph(Module &M) {
     AnalyzedFuncSet.clear();
     this->M = &M;
 
-    set<Function *> unusedFunctions;
+    set<Function *> usedFunction;
     set<Function *> notAnalyzedFunctions;
 
     for(Function &F : M) {
         if (F.use_empty())
-            unusedFunctions.insert(&F);
-        else
             notAnalyzedFunctions.insert(&F);
+        else
+            usedFunction.insert(&F);
     }
 
-    // begin by analyzing the function unused in this module
-    for(Function * F : unusedFunctions) {
-        SetVector<CallInst*> empty_callsites;
-        std::pair<Function*,SetVector<CallInst*>> entry (F, empty_callsites);
-        this->AnalyzedFuncSet.insert(entry);
-
+    for(Function * F : usedFunction) {
         LLVM_DEBUG(dbgs() << "Analyzing : \033[30m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
     }
 
-    // continue by analyzing function that have no direct call
     for(auto *F : notAnalyzedFunctions) {
-        if(this->AnalyzedFuncSet.contains(F)) 
-            continue;
-
-        SetVector<CallInst*> empty_callsites;
-        std::pair<Function*,SetVector<CallInst*>> entry (F, empty_callsites);
-        this->AnalyzedFuncSet.insert(entry);
-
         LLVM_DEBUG(dbgs() << "Analyzing : \033[33m" << F->getName() << "\033[0m\n");
         this->analyzeFunction(F);
     }
+
+    // for each indirect call, compute the potential new target and add the aliasing relation to the agraph
+    bool modified;
+    do {
+        modified = false;
+
+        // function have now all been analyzed, register aliasing between return value and
+        // the different callsites
+        for(auto &[F , CallSet] : UnknownCallRetVal) {
+            auto NonVoidRetVal = AnalyzedFuncSet[F];
+            if(CallSet.empty() || NonVoidRetVal.empty()) {
+                modified = modified || false;
+                continue;
+            }
+
+            modified = true;
+            for (auto * CI : CallSet) {
+                for (auto * RI : NonVoidRetVal)
+                    HandleMove(RI->getReturnValue(), CI);
+            }
+            CallSet.clear();
+        }
+
+        // compute if there are new targets for each indirect call,
+        // and if so, handle the aliasing between arg of the call and targets
+        // plus register the call in the return value list to analyze
+        for(auto &[Call, Targets] : ICallTargets) {
+            SetVector<Function*> NewTargets = getCallTargetSet(Call);
+            NewTargets.set_subtract(Targets);
+
+            if(NewTargets.empty()) {
+                modified = modified || false;
+                continue;
+            }
+
+            modified = true;
+            for(auto F : NewTargets) {
+                HandleParamArgAliasing(Call, F);
+                Targets.insert(F);
+                if(F->willReturn())
+                    UnknownCallRetVal[F].insert(Call);
+            }
+        }
+    } while(modified);
+
+    AnalyzedFuncSet.clear();
+    UnknownCallRetVal.clear();
+    FuncGlobalUsed.clear();
+    ICallTargets.clear();
 }
 
 //Merge n1 into n2
@@ -279,7 +299,7 @@ void AliasGraph::mergeNode(AliasNode* n1, AliasNode* n2){
             this->ToNodeMap[n1_fromNode] = n2;
         }
     }
-#endif //
+#endif // FIELD_SENSITIVITY
 }
 
 AliasNode * AliasGraph::getNode(Value *V){
@@ -456,31 +476,42 @@ bool AliasGraph::checkNodeConnectivity(AliasNode* node1, AliasNode* node2){
 /// INTERPROCEDURAL ALIAS ANALYSIS
 int instrCount = 0; // for debug only
 
-SetVector<ReturnInst*> AliasGraph::analyzeFunction(Function* F){
-    SetVector<ReturnInst*> RetSites;
-    
-    if(!F || F->getName().starts_with("llvm.lifetime")) 
-        return RetSites;
+void AliasGraph::analyzeFunction(Function* F){
+    if(AnalyzedFuncSet.contains(F))
+        return;
 
-    //testing what happens if a function is analyzed several times
-    LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << "\n"); 
+    LLVM_DEBUG(errs() << "Analyzing function " << F->getName() << "\n");
 
-    for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
-        if(
-            auto * RI = dyn_cast<ReturnInst>(&(*i));
-            RI && RI->getReturnValue()
-        ) {
-            RetSites.insert(RI);
-        } else {
-            Instruction *iInst = dyn_cast<Instruction>(&(*i));
-            this->HandleInst(iInst);
+    // For function whose argument could be function pointer, we need
+    // to register the function argument in alias graph, as we don't 
+    // know in which order will the function be analyzed : hence a function pointer
+    // passed as an argument could not have been registered in the alias graph
+    for(auto arg = F->arg_begin(); arg != F->arg_end(); arg++) {
+        if(arg->getType()->isPointerTy() && getNode(arg) == nullptr) {
+            AliasNode *node = new AliasNode();
+            node->insert(arg);
+            NodeMap[arg] = node;
         }
-#ifdef AAGRAPH_BUILD_FRAMES
-      writeToDot("../aliasgraph"+itostr(instrCount++)+".dot");
-#endif // AAGRAPH_BUILD_FRAMES
     }
 
-    return RetSites;
+    if(F->isDeclaration() || F->getName().starts_with("llvm.lifetime"))
+        return;
+
+    for (inst_iterator i = inst_begin(F), ei = inst_end(F); i != ei; ++i) {
+        if( auto * RI = dyn_cast<ReturnInst>(&(*i)); 
+            RI && RI->getReturnValue()
+        ) {
+            AnalyzedFuncSet[F].insert(RI);
+        }
+        
+        Instruction *iInst = dyn_cast<Instruction>(&(*i));
+        this->HandleInst(iInst);
+
+#ifdef AAGRAPH_BUILD_FRAMES
+        writeToDot("../aliasgraph"+itostr(instrCount++)+".dot");
+#endif // AAGRAPH_BUILD_FRAMES
+
+    }
 }
 
 /// INSTRUCTION HANDLER
@@ -525,9 +556,12 @@ void AliasGraph::HandleOperator(Value* v){
 
 void AliasGraph::HandleInst(Instruction* I){
     // Handle GEP and Cast operator
-    // Arguments of a call are also caught here
     for(unsigned int i = 0; i < I->getNumOperands(); i++){
         Value* op = I->getOperand(i);
+
+        if(auto * Glb = dyn_cast<GlobalValue>(op))
+            FuncGlobalUsed[I->getFunction()].insert(Glb);
+
         this->HandleOperator(op);
     }
 
@@ -682,7 +716,7 @@ end:
 
 // *v2 = v1
 void AliasGraph::HandleStore(StoreInst* STI){
-    
+
     //store vop to pop
     Value* vop = STI->getValueOperand(); //v1
     Value* pop = STI->getPointerOperand(); //v2
@@ -890,62 +924,158 @@ void AliasGraph::HandleMove(Value* v1, Value* v2){
     this->mergeNode(node1, node2);
 }
 
-// f(p1, p2, ...)
+// Allow for filtering of debug & "llvm.lifetime" call that produces wrong alias result
+bool AliasGraph::IrrelevantCall(CallInst *Call) {
+    auto * CalledFunc = Call->getCalledFunction();
+    return Call->isDebugOrPseudoInst() || (
+        CalledFunc != nullptr && CalledFunc->getName().starts_with("llvm.lifetime"));
+}
+
+// Handling of undefined target for call, like a function that is only declared.
+// All pointer argument of the call are supposed to alias, as these function
+// can always be memcopy of memove function for instance.
+void AliasGraph::HandleUndefTarget(CallInst * Call) {
+    auto * Param = Call->arg_begin();
+    while(Param != Call->arg_end() && ! Param->get()->getType()->isPointerTy()) 
+        Param++;
+
+    if(Param == Call->arg_end())
+        // no ptr parameter found
+        return;
+
+    auto *OtherParam = Param + 1;
+    while(OtherParam != Call->arg_end()) {
+        if(OtherParam->get()->getType()->isPointerTy())
+            HandleMove(Param->get(), OtherParam->get());
+        OtherParam++;
+    }
+}
+
+// Register aliasing relation between argument and parameter of the call
+void AliasGraph::HandleParamArgAliasing(CallInst * CAI, Function * Target) {
+    auto * CallArg = CAI->arg_begin();
+    auto * FuncArg = Target->arg_begin();
+    
+    while (CallArg != CAI->arg_end() && FuncArg != Target->arg_end()) {
+        if(getNode(CallArg->get()) == nullptr){
+            AliasNode* node = new AliasNode();
+            node->insert(CallArg->get());
+            this->NodeMap[CallArg->get()] = node;
+        }
+
+        this->HandleMove(FuncArg, CallArg->get());
+        FuncArg++;
+        CallArg++;
+    } 
+}
+
+// getting all the function that can be potentially called
+// weither the function is fully called to or it is an indirect call
+SetVector<Function*> AliasGraph::getCallTargetSet(CallInst *Call) {
+    SetVector<Function*> CallTarget;
+    
+    if(! Call->isIndirectCall()) {
+        CallTarget.insert(Call->getCalledFunction());
+        return CallTarget;
+    }
+
+    AliasNode * node = getNode(Call->getCalledOperand());
+
+#ifdef DEBUG_TARGET
+    if(!node) {
+        auto op = Call->getCalledOperand();
+        errs() << "\033[31mOn " << to_string(*Call) << " ; \ncalled operand : " << *op << " ; is not registered in a-graph.\n";
+        assert(false && "Aborting.");
+    }
+#else
+    assert(node && "ICall operand node isn't in graph.");
+#endif
+    
+    SetVector<AliasNode*> toExplore;
+    SetVector<AliasNode*> explored;
+    toExplore.insert(node);
+
+    while(!toExplore.empty()) {
+        auto * currentNode = toExplore.back();
+        toExplore.pop_back();
+
+        if(explored.contains(currentNode))
+            continue;
+
+        for(auto * V : currentNode->aliasclass) {
+            if (auto * F = dyn_cast<Function>(V))
+                CallTarget.insert(F);
+            
+            // if V is an array type containing function ptr
+            if (auto * Glb = dyn_cast<GlobalValue>(V)) {
+                for(unsigned int i=0; i<Glb->getNumOperands(); i++) {
+                    if (auto * F = dyn_cast<Function>(Glb->getOperand(i)))
+                        CallTarget.insert(F);
+                }
+            }
+        }
+
+        explored.insert(currentNode);
+        if(FromNodeMap.count(currentNode) > 0) toExplore.insert(FromNodeMap[currentNode]);
+        if(ToNodeMap.count(currentNode)   > 0) toExplore.insert(ToNodeMap[currentNode]);
+    }
+
+    return CallTarget;
+}
+
+// < ret = > f(p1, p2, ...)
 void AliasGraph::HandleCai(CallInst *CAI) {
     // ignore debug information
-    if(CAI->isDebugOrPseudoInst()) return;
+    if(IrrelevantCall(CAI)) return;
 
-    //TODO : transform it to the SPATA handle call function
+    // create node for the call
     if(getNode(CAI) == nullptr){
         auto* node = new AliasNode();
         node->insert(CAI);
         this->NodeMap[CAI] = node;
     }
 
-    auto calledFunc = CAI->getCalledFunction();
-    if( calledFunc == nullptr ||
-        calledFunc->getName().starts_with("llvm.lifetime")) 
-        // ignoring indirect call and function for lifetime of static alloc object
-        return;
-
-    // Test handling of memory copy instruction
-    if(calledFunc->getName().contains("memcpy")
-        || calledFunc->getName().contains("memmove")) {
-        HandleMove(CAI->getArgOperand(0), CAI->getArgOperand(1));
-        return;
+    // indirect call or undefined function
+    SetVector<Function*> Targets = getCallTargetSet(CAI);
+    if(CAI->isIndirectCall()) {
+        SetVector<Function*> TargetDONE;
+        auto newEntry = std::pair<CallInst*, SetVector<Function*>> 
+            (CAI, TargetDONE);
+        ICallTargets.insert(newEntry);
     }
 
-    // Moving the parameter of the call to the argument of the function
-    auto argCallIt = CAI->arg_begin();
-    auto funcArgIt = calledFunc->arg_begin();
-    while (argCallIt != CAI->arg_end() && funcArgIt != calledFunc->arg_end()) {
-        if(getNode(*argCallIt) == nullptr){
-            AliasNode* node = new AliasNode();
-            node->insert(*argCallIt);
-            this->NodeMap[*argCallIt] = node;
-        }
+    for(auto * F : Targets) {
 
-        this->HandleMove(funcArgIt, *argCallIt);
-        funcArgIt++;
-        argCallIt++;
-    } 
+        if(F->isDeclaration())
+            HandleUndefTarget(CAI);
 
-    // analyzing the function on this callsite if not already done
-    auto entry = AnalyzedFuncSet.find(calledFunc);
-    if(entry == AnalyzedFuncSet.end() || ! entry->second.contains(CAI)) {
-        if(entry == AnalyzedFuncSet.end()) {
-            SetVector<CallInst*> initSVCall;
-            initSVCall.insert(CAI);
-            std::pair<Function*,SetVector<CallInst*>> newEntry (calledFunc, initSVCall);
-            AnalyzedFuncSet.insert(newEntry);
+        // Moving the parameter of the call to the argument of the function
+        auto * CallArg = HandleParamArgAliasing(CAI, F);
+        if(ICallTargets.contains(CAI))
+            // the aliasing between arg and param on this function is done
+            ICallTargets[CAI].insert(F); 
+        
+        // computing the aliasing with the return values of the call
+        auto funcRetvalEntry = AnalyzedFuncSet.find(F);
+        auto funcCallsiteEntry = UnknownCallRetVal.find(F);
+        if(funcRetvalEntry == AnalyzedFuncSet.end()) { 
+            // the function was not analyzed yet, we need to register
+            // the call so that it will be handled later
+            if(funcCallsiteEntry == UnknownCallRetVal.end()) {
+                SetVector<CallInst*> CallSet;
+                CallSet.insert(CAI);
+                auto newEntry = std::pair<Function*, SetVector<CallInst*>> (F, CallSet);
+                UnknownCallRetVal.insert(newEntry);
+            } else {
+                funcCallsiteEntry->second.insert(CAI);
+            }
         } else {
-            entry->second.insert(CAI);
-        }
-
-        auto RetInst = analyzeFunction(calledFunc);
-        // handling aliasing with the return values of the function called
-        for(auto *RI : RetInst) {
-            HandleMove(RI->getReturnValue(), CAI);
+            // function was analyzed and the ret values are known, we can use the according alias information
+            auto NonVoidRetVal = funcRetvalEntry->second;
+            // handling aliasing with the return values of the function called
+            for(auto *RI : NonVoidRetVal) {
+                HandleMove(RI->getReturnValue(), CAI);
+            }
         }
     }
 }
@@ -1055,73 +1185,94 @@ AliasResult GraphAAResult::alias(const MemoryLocation &LocA, const MemoryLocatio
 // i.e is in the same node in the alias graph.
 // If so, and if the corresponding argument in the function call is not readonly,
 // then return ModRef.
+// Also check for aliasing with a potential return value, and take into account if the call
+// is indirect call
 ModRefInfo GraphAAResult::getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
                          AAQueryInfo &AAQI) {
     AliasNode * node = AG.getNode(Loc);
+
+#ifdef DEBUG_TARGET
     if(node == nullptr) {
         AG.dbg_msg = "\033[31m"+to_string(*Loc.Ptr)+" : has no node in aa graph, can't proceed with getModRef.\033[0m\n";
+        return ModRefInfo::ModRef;
     }
+#else
     assert(node != nullptr);
+#endif // DEBUG_TARGET
 
     // check for aliasing with the return value
-    if (Call->isReturnNonNull()) {
+    if (! Call->getType()->isVoidTy()) {
         AliasNode * retNode = AG.getNode(const_cast<CallBase*>(Call));
 
+#ifdef DEBUG_TARGET
         if(!retNode) {
             AG.dbg_msg = to_string(*Call) + " not registered in a-graph.";
+            return ModRefInfo::ModRef;
         }
+#else
         assert(retNode);
+#endif //DEBUG_TARGET
 
         if(AG.checkNodeConnectivity(node, retNode))
             return ModRefInfo::ModRef;
     }
 
-    // indirect call, can only say there is no mod ref if
-    // the parameter don't alias with the given memory location
-    if(Call->isIndirectCall()) {
-        AliasNode * funPtrNode = AG.getNode(Call->getCalledOperand());
-        if(AG.checkNodeConnectivity(node, funPtrNode))
-            return ModRefInfo::ModRef;
+    SetVector<Function*> Targets;
+    if (auto * CAI = dyn_cast<CallInst>(Call))
+        Targets = AG.getCallTargetSet(const_cast<CallInst*>(CAI));
 
-        for(auto &param : Call->args()) {
-            auto *paramNode = AG.getNode(param.get());
-            if(AG.checkNodeConnectivity(node, paramNode))
-                // there is a may alias relation, then mod ref is output
+    if (Targets.empty()) {
+        errs() << "\033[31m" << *Call << " : has no target function in a-graph.\033[0m\n";
+        return ModRefInfo::ModRef;
+    }
+#else
+    assert(!Targets.empty() && "Call has no target function.");
+#endif
+
+    auto Result = ModRefInfo::NoModRef;
+    // checking for each possible target function
+    for (auto * F : Targets) {
+        // if memory effect are known and mmeory not accessed
+        MemoryEffects ME = F->getMemoryEffects();
+        if(ME.doesNotAccessMemory() || ! ME.doesAccessArgPointees())
+            Result |= ModRefInfo::NoModRef;
+
+        // checking for aliasing with the global variable used inside the function
+        for(auto * Glb : AG.FuncGlobalUsed[F]) {
+            AliasNode * glbNode = AG.getNode(Glb);
+            if(!glbNode) continue;
+            // if aliasing with a global, then the variable can be mod/ref by the func
+            if(AG.checkNodeConnectivity(node, glbNode))
                 return ModRefInfo::ModRef;
         }
 
-        return ModRefInfo::NoModRef;
-    }
-
-    Function * CalledF = Call->getCalledFunction();
-    assert(CalledF != nullptr);
-
-    // the called function is known, we can access
-    // information about its memory effect
-    MemoryEffects ME = CalledF->getMemoryEffects();
-    if(ME.doesNotAccessMemory() || ! ME.doesAccessArgPointees())
-        return ModRefInfo::NoModRef;
-
-    // function declaration is known, we can exploit
-    // the argument indication to check for ModRefInfo
-    bool mayRef = false;
-
-    auto paramIt = Call->arg_begin();
-    auto argIt = CalledF->arg_begin();
-    while(paramIt != Call->arg_end() && argIt != CalledF->arg_end()){
-        auto *paramNode = AG.getNode(paramIt->get());
-        if(AG.checkNodeConnectivity(node, paramNode)) {
-            if(argIt->onlyReadsMemory()) {
-                mayRef = true;
-            } else {
-                return ModRefInfo::ModRef;
+        // we can exploit the argument indication to check for ModRefInfo
+        auto paramIt = Call->arg_begin();
+        auto argIt = F->arg_begin();
+        while(paramIt != Call->arg_end() && argIt != F->arg_end()){
+            auto *paramNode = AG.getNode(paramIt->get());
+            if(AG.checkNodeConnectivity(node, paramNode)) {
+                if(argIt->onlyReadsMemory()) {
+                    Result |= ModRefInfo::Ref;
+                } else {
+                    return ModRefInfo::ModRef;
+                }
             }
+            paramIt++;
+            argIt++;
         }
-        paramIt++;
-        argIt++;
+
+        // for variadic function, check if the rest of the call arg are aliases to the memory loc
+        // if so, we can't tell if they will be mod/ref by the call or not, so return mod-ref
+        while(paramIt != Call->arg_end()) {
+            auto *paramNode = AG.getNode(paramIt->get());
+            if(AG.checkNodeConnectivity(node, paramNode)) 
+                return ModRefInfo::ModRef;
+            paramIt++;
+        }
     }
 
-    return mayRef ? ModRefInfo::Ref : ModRefInfo::NoModRef;
+    return Result;
 }
 
 MemoryEffects GraphAAResult::getMemoryEffects(const Function *F) {

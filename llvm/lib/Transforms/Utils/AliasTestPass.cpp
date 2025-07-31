@@ -327,11 +327,13 @@ std::string compareWithCall(SetVector<Instruction*> ISet, SetVector<CallInst*> C
       ModRefInfo MRIAA = AA.getModRefInfo(MemInst, Call); 
       ModRefInfo MRIGraphAA = GraphAAR.getModRefInfo(Call, MemLoc, AAQI);  
 
+#ifdef DEBUG_TARGET
       if(! GraphAAR.getGraph().dbg_msg.empty()) { 
         errs() << GraphAAR.getGraph().dbg_msg << "\n"; 
         errs() << "\033[31m On instruction : " << *MemInst << "\033[0m\n";   
         assert(false && "Error on mod ref."); 
       }  
+#endif // DEBUG_TARGET
 
       if(MRIGraphAA < MRIAA)
         stats += "\n"+to_string(betRes++)+" : "+to_string(*Call)+" : "+to_string(MRIAA)
@@ -602,6 +604,8 @@ void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM,
     PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphAlias, false);
     PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicAlias, false);
     PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefAlias, false);
+
+    counts[0]++;
   }
 
   if (betterAlias && betterModRef)
@@ -612,10 +616,14 @@ void AliasTestPass::evaluate(Function &F, FunctionAnalysisManager &FAM,
     PRINT_STAT("\033[32mSTANDALONE GRAPH AA\033[0m", graphModRef, true);
     PRINT_STAT("\033[32mSTANDALONE BASIC AA\033[0m", basicModRef, true);
     PRINT_STAT("\033[32mGRAPH AA CHAINED WITH DEF PIPELINE\033[0m", graphDefModRef, true);
+
+    counts[1]++;
   }
 
   if(betterAlias || betterModRef)
     errs() << "//====================================================================//\n\n";
+
+  counts[2]++;
 }
 
 // ---------------------------------------------
@@ -629,6 +637,7 @@ PreservedAnalyses AliasTestPass::run(Module &M,
          << "\n///////////////////////////////////////////////////////////////\n";
 
   std::vector<unsigned int> counts (5, 0);
+
   for(auto &F : M) {
 #ifdef SIMPLE_EVAL
     this->evaluate(F, FAM, AM, counts);
@@ -638,6 +647,12 @@ PreservedAnalyses AliasTestPass::run(Module &M,
     this->iterateOnFunction(F, FAM, AM);
 #endif //SIMPLE_EVAL
   }
+
+#ifdef SIMPLE_EVAL
+  if(counts[0] > 0 || counts[1] > 0)
+    errs() << "\n\033[32m" << counts[0] << " function showed improved alias result and "
+           << counts[1] << " showed improved modref, over " << counts[1] << " defined function.\033[0m\n";
+#endif
 
   return PreservedAnalyses::all();
 }
